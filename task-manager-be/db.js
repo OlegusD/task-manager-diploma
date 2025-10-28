@@ -68,6 +68,13 @@ async function init() {
     `)
 
         await client.query(`
+      ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS assignee_id UUID REFERENCES users(id);
+    `)
+
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);`)
+
+        await client.query(`
       CREATE TABLE IF NOT EXISTS task_comments (
         id UUID PRIMARY KEY,
         task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
