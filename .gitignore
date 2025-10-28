@@ -1,3 +1,5 @@
+node_modules
+
 task-manager-be/node_modules
 task-manager-be/package_lock.json
 task-manager-be/.env
