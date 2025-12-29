@@ -3,7 +3,7 @@ const { query } = require('../db')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const { v4: uuidv4 } = require('uuid')
-const { requireAuth } = require('./middleware')
+const { requireAuth, requireRole } = require('./middleware')
 
 const router = Router()
 
@@ -61,6 +61,26 @@ router.get('/me', requireAuth, async (req, res) => {
         [req.user.id]
     )
     res.json(rows[0] || null)
+})
+
+router.post('/users', requireAuth, requireRole('admin'), async (req, res) => {
+    const { email, password, name, role = 'user' } = req.body || {}
+    if (!email || !password || !name) return res.status(400).json({ error: 'Missing fields' })
+
+    const { rows: exists } = await query('SELECT id FROM users WHERE email=$1', [email])
+    if (exists.length) return res.status(409).json({ error: 'Email exists' })
+
+    const { rows: roleRow } = await query(`SELECT id FROM roles WHERE name=$1 LIMIT 1;`, [role])
+    const roleId = roleRow[0]?.id
+    if (!roleId) return res.status(400).json({ error: 'Unknown role' })
+
+    const hash = bcrypt.hashSync(password, 10)
+    const id = uuidv4()
+    await query(
+        'INSERT INTO users (id, email, password_hash, name, role_id) VALUES ($1,$2,$3,$4,$5)',
+        [id, email, hash, name, roleId]
+    )
+    res.status(201).json({ id })
 })
 
 module.exports = router

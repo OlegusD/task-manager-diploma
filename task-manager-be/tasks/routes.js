@@ -1,14 +1,19 @@
 const { Router } = require('express')
 const { query } = require('../db')
 const { v4: uuidv4 } = require('uuid')
-const { requireAuth, requireRole } = require('../auth/middleware')
+const { requireAuth } = require('../auth/middleware')
+const { emitTaskStatusChange } = require('../ws')
 
 const router = Router()
 router.use(requireAuth)
 
-// Список задач (с фильтрами по статусу/приоритету)
+async function getDefaultProjectId() {
+    const { rows } = await query(`SELECT id FROM projects ORDER BY created_at ASC LIMIT 1;`)
+    return rows[0]?.id ?? null
+}
+
 router.get('/', async (req, res) => {
-    const { status_id, priority_id } = req.query
+    const { status_id, priority_id, project_id, assignee_id, type_id } = req.query
     const where = []
     const params = []
     if (status_id) {
@@ -19,33 +24,61 @@ router.get('/', async (req, res) => {
         params.push(priority_id)
         where.push(`t.priority_id = $${params.length}`)
     }
+    if (project_id) {
+        params.push(project_id)
+        where.push(`t.project_id = $${params.length}`)
+    }
+    if (assignee_id) {
+        params.push(assignee_id)
+        where.push(`t.assignee_id = $${params.length}`)
+    }
+    if (type_id) {
+        params.push(type_id)
+        where.push(`t.type_id = $${params.length}`)
+    }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const { rows } = await query(
         `
-    SELECT t.*, s.name AS status_name, p.name AS priority_name, u.name AS author_name, asg.name AS assignee_name
+    SELECT t.*, s.name AS status_name, p.name AS priority_name, tt.name AS type_name,
+           prj.name AS project_name, au.name AS author_name, asg.name AS assignee_name
     FROM tasks t
     JOIN statuses s ON s.id = t.status_id
     JOIN priorities p ON p.id = t.priority_id
-    JOIN users u ON u.id = t.author_id
+    LEFT JOIN task_types tt ON tt.id = t.type_id
+    LEFT JOIN projects prj ON prj.id = t.project_id
+    JOIN users au ON au.id = t.author_id
     LEFT JOIN users asg ON asg.id = t.assignee_id
     ${whereSql}
-    ORDER BY t.created_at DESC
+    ORDER BY t.updated_at DESC
     `,
         params
     )
     res.json(rows)
 })
 
-// Создать задачу
 router.post('/', async (req, res) => {
-    const { title, description, status_id, priority_id, parent_id, assignee_id } = req.body || {}
+    const {
+        title,
+        description,
+        status_id,
+        priority_id,
+        parent_id,
+        assignee_id,
+        project_id,
+        type_id,
+        start_date,
+        due_date,
+    } = req.body || {}
     if (!title || !status_id || !priority_id)
         return res.status(400).json({ error: 'Missing fields' })
 
+    const projectId = project_id || (await getDefaultProjectId())
+    if (!projectId) return res.status(400).json({ error: 'No project' })
+
     const id = uuidv4()
     await query(
-        `INSERT INTO tasks (id, title, description, status_id, priority_id, author_id, parent_id, assignee_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO tasks (id, title, description, status_id, priority_id, author_id, parent_id, assignee_id, project_id, type_id, start_date, due_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
             id,
             title,
@@ -55,6 +88,10 @@ router.post('/', async (req, res) => {
             req.user.id,
             parent_id ?? null,
             assignee_id ?? null,
+            projectId,
+            type_id ?? null,
+            start_date ? new Date(start_date) : new Date(),
+            due_date ? new Date(due_date) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         ]
     )
 
@@ -64,7 +101,15 @@ router.post('/', async (req, res) => {
         [
             uuidv4(),
             id,
-            JSON.stringify({ title, status_id, priority_id, parent_id, assignee_id }),
+            JSON.stringify({
+                title,
+                status_id,
+                priority_id,
+                parent_id,
+                assignee_id,
+                project_id: projectId,
+                type_id,
+            }),
             req.user.id,
         ]
     )
@@ -79,11 +124,15 @@ router.get('/:id', async (req, res) => {
        t.*,
        s.name AS status_name,
        p.name AS priority_name,
+       tt.name AS type_name,
+       prj.name AS project_name,
        au.name  AS author_name,
        asg.name AS assignee_name
      FROM tasks t
      JOIN statuses  s   ON s.id  = t.status_id
      JOIN priorities p  ON p.id  = t.priority_id
+     LEFT JOIN task_types tt ON tt.id = t.type_id
+     LEFT JOIN projects prj ON prj.id = t.project_id
      JOIN users     au  ON au.id = t.author_id
      LEFT JOIN users asg ON asg.id = t.assignee_id
      WHERE t.id = $1`,
@@ -106,13 +155,10 @@ router.get('/:id', async (req, res) => {
     res.json({ task: rows[0], comments, history })
 })
 
-// Обновить задачу (только автор или админ)
 router.patch('/:id', async (req, res) => {
     const { id } = req.params
-
-    // Получим текущую задачу
     const { rows: owner } = await query(
-        'SELECT author_id, status_id, priority_id, title, description, parent_id, assignee_id FROM tasks WHERE id=$1',
+        'SELECT author_id, status_id, priority_id, title, description, parent_id, assignee_id, project_id, type_id, start_date, due_date FROM tasks WHERE id=$1',
         [id]
     )
     if (!owner.length) return res.status(404).json({ error: 'Not found' })
@@ -120,7 +166,6 @@ router.patch('/:id', async (req, res) => {
     const isOwner = task.author_id === req.user.id
     if (!isOwner && req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
 
-    // Разрешённые поля (добавили assignee_id)
     const fieldsMap = {
         title: 'title',
         description: 'description',
@@ -128,6 +173,10 @@ router.patch('/:id', async (req, res) => {
         priority_id: 'priority_id',
         parent_id: 'parent_id',
         assignee_id: 'assignee_id',
+        project_id: 'project_id',
+        type_id: 'type_id',
+        start_date: 'start_date',
+        due_date: 'due_date',
     }
 
     const sets = []
@@ -146,7 +195,6 @@ router.patch('/:id', async (req, res) => {
         params
     )
 
-    // Логируем дельту
     const diffs = {}
     Object.keys(fieldsMap).forEach((k) => {
         if (req.body[k] !== undefined && req.body[k] !== task[k]) {
@@ -159,10 +207,19 @@ router.patch('/:id', async (req, res) => {
         [uuidv4(), id, JSON.stringify(task), JSON.stringify(diffs), req.user.id]
     )
 
+    if (diffs.status_id) {
+        emitTaskStatusChange({
+            taskId: id,
+            from: diffs.status_id.from,
+            to: diffs.status_id.to,
+            author: req.user.id,
+            changed_at: new Date().toISOString(),
+        })
+    }
+
     res.json({ ok: true })
 })
 
-// Удалить задачу (только автор или админ)
 router.delete('/:id', async (req, res) => {
     const { id } = req.params
     const { rows } = await query('SELECT author_id FROM tasks WHERE id=$1', [id])
@@ -179,7 +236,6 @@ router.delete('/:id', async (req, res) => {
     res.json({ ok: true })
 })
 
-// Добавить комментарий
 router.post('/:id/comments', async (req, res) => {
     const { id } = req.params
     const { body } = req.body || {}

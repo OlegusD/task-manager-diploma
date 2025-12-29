@@ -1,14 +1,28 @@
-import React from 'react'
-import { Avatar, Button, TextField, Grid, Box, Typography, Container, Link } from '@mui/material'
+import React, { useState } from 'react'
+import { Avatar, Button, TextField, Grid, Box, Typography, Container, Link, Alert } from '@mui/material'
 import PersonAddAltOutlinedIcon from '@mui/icons-material/PersonAddAltOutlined'
-import { useNavigate } from 'react-router'
+import { useNavigate, Link as RouterLink } from 'react-router-dom'
+import { useAuth } from '../AuthContext'
 
 export default function SignupPage() {
     const navigate = useNavigate()
+    const { signup, setError, error } = useAuth()
+    const [name, setName] = useState('')
+    const [email, setEmail] = useState('')
+    const [password, setPassword] = useState('')
+    const [submitting, setSubmitting] = useState(false)
 
-    const handleSignup = (e) => {
+    const handleSignup = async (e) => {
         e.preventDefault()
-        navigate('/login') // переход на логин после регистрации
+        setSubmitting(true)
+        try {
+            await signup({ email, password, name })
+            navigate('/')
+        } catch (err) {
+            setError(err.message)
+        } finally {
+            setSubmitting(false)
+        }
     }
 
     return (
@@ -21,15 +35,48 @@ export default function SignupPage() {
                     Регистрация
                 </Typography>
                 <Box component="form" onSubmit={handleSignup} sx={{ mt: 1 }}>
-                    <TextField margin="normal" required fullWidth label="Имя" />
-                    <TextField margin="normal" required fullWidth label="Email" />
-                    <TextField margin="normal" required fullWidth label="Пароль" type="password" />
-                    <Button type="submit" fullWidth variant="contained" sx={{ mt: 3, mb: 2 }}>
+                    {error ? (
+                        <Alert severity="error" sx={{ mb: 2 }}>
+                            {error}
+                        </Alert>
+                    ) : null}
+                    <TextField
+                        margin="normal"
+                        required
+                        fullWidth
+                        label="Имя"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                    />
+                    <TextField
+                        margin="normal"
+                        required
+                        fullWidth
+                        label="Email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                    />
+                    <TextField
+                        margin="normal"
+                        required
+                        fullWidth
+                        label="Пароль"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                    />
+                    <Button
+                        type="submit"
+                        fullWidth
+                        variant="contained"
+                        sx={{ mt: 3, mb: 2 }}
+                        disabled={submitting}
+                    >
                         Создать аккаунт
                     </Button>
                     <Grid container justifyContent="flex-end">
                         <Grid item>
-                            <Link onClick={() => navigate('/login')} sx={{ cursor: 'pointer' }}>
+                            <Link component={RouterLink} to="/login" sx={{ cursor: 'pointer' }}>
                                 Уже есть аккаунт? Войти
                             </Link>
                         </Grid>

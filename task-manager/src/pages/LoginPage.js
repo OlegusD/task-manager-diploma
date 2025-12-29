@@ -1,14 +1,27 @@
-import React from 'react'
-import { Avatar, Button, TextField, Grid, Box, Typography, Container, Link } from '@mui/material'
+import React, { useState } from 'react'
+import { Avatar, Button, TextField, Grid, Box, Typography, Container, Link, Alert } from '@mui/material'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
-import { useNavigate } from 'react-router'
+import { useNavigate, Link as RouterLink } from 'react-router-dom'
+import { useAuth } from '../AuthContext'
 
 export default function LoginPage() {
     const navigate = useNavigate()
+    const { login, setError, error } = useAuth()
+    const [email, setEmail] = useState('admin@local')
+    const [password, setPassword] = useState('admin')
+    const [submitting, setSubmitting] = useState(false)
 
-    const handleLogin = (e) => {
+    const handleLogin = async (e) => {
         e.preventDefault()
-        navigate('/') // просто переход
+        setSubmitting(true)
+        try {
+            await login(email, password)
+            navigate('/')
+        } catch (err) {
+            setError(err.message)
+        } finally {
+            setSubmitting(false)
+        }
     }
 
     return (
@@ -18,24 +31,45 @@ export default function LoginPage() {
                     <LockOutlinedIcon />
                 </Avatar>
                 <Typography component="h1" variant="h5">
-                    Вход в систему
+                    Вход
                 </Typography>
                 <Box component="form" onSubmit={handleLogin} sx={{ mt: 1 }}>
+                    {error ? (
+                        <Alert severity="error" sx={{ mb: 2 }}>
+                            {error}
+                        </Alert>
+                    ) : null}
                     <TextField
                         margin="normal"
                         required
                         fullWidth
                         label="Email"
                         autoComplete="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
                     />
-                    <TextField margin="normal" required fullWidth label="Пароль" type="password" />
-                    <Button type="submit" fullWidth variant="contained" sx={{ mt: 3, mb: 2 }}>
+                    <TextField
+                        margin="normal"
+                        required
+                        fullWidth
+                        label="Пароль"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                    />
+                    <Button
+                        type="submit"
+                        fullWidth
+                        variant="contained"
+                        sx={{ mt: 3, mb: 2 }}
+                        disabled={submitting}
+                    >
                         Войти
                     </Button>
                     <Grid container justifyContent="flex-end">
                         <Grid item>
-                            <Link onClick={() => navigate('/signup')} sx={{ cursor: 'pointer' }}>
-                                Нет аккаунта? Зарегистрироваться
+                            <Link component={RouterLink} to="/signup" sx={{ cursor: 'pointer' }}>
+                                Нет аккаунта? Создать
                             </Link>
                         </Grid>
                     </Grid>
