@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+﻿import React, { useEffect, useState } from 'react'
 import {
     Container,
     Typography,
@@ -10,20 +10,25 @@ import {
     TextField,
     Alert,
     Grid,
-    Divider,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogActions,
+    MenuItem,
+    Chip,
 } from '@mui/material'
 import { Link as RouterLink } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
-import { listProjects, createProject, listUsers, createUser } from '../api'
+import { listProjects, createProject, listUsers } from '../api'
 
 export default function DashboardPage() {
     const { token, user } = useAuth()
     const [projects, setProjects] = useState([])
     const [people, setPeople] = useState([])
-    const [newProject, setNewProject] = useState({ name: '', description: '' })
-    const [newPerson, setNewPerson] = useState({ name: '', email: '', password: '' })
+    const [newProject, setNewProject] = useState({ name: '', description: '', member_ids: [] })
     const [message, setMessage] = useState('')
     const [error, setError] = useState('')
+    const [projectModal, setProjectModal] = useState(false)
 
     useEffect(() => {
         if (!token) return
@@ -41,25 +46,13 @@ export default function DashboardPage() {
     }
 
     async function handleCreateProject(e) {
-        e.preventDefault()
-        if (!newProject.name.trim()) return
+        e?.preventDefault()
+        if (!newProject.name.trim()) return setError('Введите название проекта')
         try {
             await createProject(token, newProject)
-            setNewProject({ name: '', description: '' })
+            setNewProject({ name: '', description: '', member_ids: [] })
             setMessage('Проект создан')
-            loadData()
-        } catch (e) {
-            setError(e.message)
-        }
-    }
-
-    async function handleCreatePerson(e) {
-        e.preventDefault()
-        if (!newPerson.name || !newPerson.email || !newPerson.password) return
-        try {
-            await createUser(token, newPerson)
-            setNewPerson({ name: '', email: '', password: '' })
-            setMessage('Сотрудник добавлен')
+            setProjectModal(false)
             loadData()
         } catch (e) {
             setError(e.message)
@@ -87,8 +80,13 @@ export default function DashboardPage() {
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
                         <Typography variant="h6">Проекты</Typography>
                         {user?.role === 'admin' ? (
-                            <Button size="small" onClick={() => loadData()}>
-                                Обновить
+                            <Button
+                                size="small"
+                                variant="contained"
+                                onClick={() => setProjectModal(true)}
+                                sx={{ px: 1.75, py: 0.6, fontSize: 14 }}
+                            >
+                                Создать проект
                             </Button>
                         ) : null}
                     </Stack>
@@ -102,6 +100,9 @@ export default function DashboardPage() {
                                     <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                                         {p.description || 'Без описания'}
                                     </Typography>
+                                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                                        <Chip size="small" label={`Участников: ${p.members_count ?? 0}`} />
+                                    </Stack>
                                     <Stack direction="row" spacing={1}>
                                         <Button
                                             component={RouterLink}
@@ -130,53 +131,23 @@ export default function DashboardPage() {
                 </Grid>
 
                 <Grid item xs={12} md={5}>
-                    {user?.role === 'admin' ? (
-                        <Box component="form" onSubmit={handleCreateProject} sx={{ mb: 3 }}>
-                            <Typography variant="subtitle1" fontWeight={700}>
-                                Новый проект
-                            </Typography>
-                            <TextField
-                                label="Название"
-                                value={newProject.name}
-                                onChange={(e) =>
-                                    setNewProject((prev) => ({ ...prev, name: e.target.value }))
-                                }
-                                size="small"
-                                fullWidth
-                                sx={{ mt: 1, mb: 1 }}
-                            />
-                            <TextField
-                                label="Описание"
-                                value={newProject.description}
-                                onChange={(e) =>
-                                    setNewProject((prev) => ({ ...prev, description: e.target.value }))
-                                }
-                                size="small"
-                                fullWidth
-                                multiline
-                                rows={2}
-                            />
-                            <Button type="submit" variant="contained" sx={{ mt: 1 }}>
-                                Создать проект
-                            </Button>
-                        </Box>
-                    ) : null}
-
-                    <Divider sx={{ mb: 2 }} />
-
                     <Typography variant="subtitle1" fontWeight={700}>
-                        Команда
+                        Сотрудники
                     </Typography>
                     <Stack spacing={1} sx={{ mt: 1 }}>
                         {people.map((p) => (
                             <Card key={p.id} variant="outlined">
                                 <CardContent sx={{ py: 1.5 }}>
-                                    <Typography variant="body1" fontWeight={600}>
-                                        {p.name}
-                                    </Typography>
-                                    <Typography variant="caption" color="text.secondary">
-                                        {p.email} · {p.role}
-                                    </Typography>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Box>
+                                            <Typography variant="body1" fontWeight={600}>
+                                                {p.name}
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                                {p.email} · {p.role}
+                                            </Typography>
+                                        </Box>
+                                    </Stack>
                                 </CardContent>
                             </Card>
                         ))}
@@ -185,49 +156,65 @@ export default function DashboardPage() {
                         ) : null}
                     </Stack>
 
-                    {user?.role === 'admin' ? (
-                        <Box component="form" onSubmit={handleCreatePerson} sx={{ mt: 3 }}>
-                            <Typography variant="subtitle1" fontWeight={700}>
-                                Добавить сотрудника
-                            </Typography>
-                            <TextField
-                                label="Имя"
-                                value={newPerson.name}
-                                onChange={(e) =>
-                                    setNewPerson((prev) => ({ ...prev, name: e.target.value }))
-                                }
-                                size="small"
-                                fullWidth
-                                sx={{ mt: 1 }}
-                            />
-                            <TextField
-                                label="Email"
-                                value={newPerson.email}
-                                onChange={(e) =>
-                                    setNewPerson((prev) => ({ ...prev, email: e.target.value }))
-                                }
-                                size="small"
-                                fullWidth
-                                sx={{ mt: 1 }}
-                            />
-                            <TextField
-                                label="Пароль"
-                                value={newPerson.password}
-                                onChange={(e) =>
-                                    setNewPerson((prev) => ({ ...prev, password: e.target.value }))
-                                }
-                                size="small"
-                                fullWidth
-                                sx={{ mt: 1 }}
-                                type="password"
-                            />
-                            <Button type="submit" variant="contained" sx={{ mt: 1 }}>
-                                Добавить в базу
-                            </Button>
-                        </Box>
-                    ) : null}
+                    <Button
+                        component={RouterLink}
+                        to="/team"
+                        variant="outlined"
+                        fullWidth
+                        sx={{ mt: 2 }}
+                    >
+                        Управление сотрудниками
+                    </Button>
                 </Grid>
             </Grid>
+
+            <Dialog open={projectModal} fullWidth maxWidth="sm" onClose={() => setProjectModal(false)}>
+                <DialogTitle>Создать проект</DialogTitle>
+                <DialogContent dividers>
+                    <Stack spacing={2}>
+                        <TextField
+                            label="Название"
+                            value={newProject.name}
+                            onChange={(e) => setNewProject((prev) => ({ ...prev, name: e.target.value }))}
+                            fullWidth
+                        />
+                        <TextField
+                            label="Описание"
+                            value={newProject.description}
+                            onChange={(e) => setNewProject((prev) => ({ ...prev, description: e.target.value }))}
+                            fullWidth
+                            multiline
+                            minRows={2}
+                        />
+                        <TextField
+                            select
+                            label="Участники"
+                            SelectProps={{ multiple: true }}
+                            value={newProject.member_ids}
+                            onChange={(e) =>
+                                setNewProject((prev) => ({
+                                    ...prev,
+                                    member_ids: Array.isArray(e.target.value) ? e.target.value : [],
+                                }))
+                            }
+                            fullWidth
+                            size="small"
+                        >
+                            {people.map((p) => (
+                                <MenuItem key={p.id} value={p.id}>
+                                    {p.name} ({p.email})
+                                </MenuItem>
+                            ))}
+                        </TextField>
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setProjectModal(false)}>Отмена</Button>
+                    <Button variant="contained" onClick={handleCreateProject}>
+                        Создать
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Container>
     )
 }

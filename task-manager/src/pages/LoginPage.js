@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+﻿import React, { useState } from 'react'
 import { Avatar, Button, TextField, Grid, Box, Typography, Container, Link, Alert } from '@mui/material'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import { useNavigate, Link as RouterLink } from 'react-router-dom'
@@ -69,7 +69,7 @@ export default function LoginPage() {
                     <Grid container justifyContent="flex-end">
                         <Grid item>
                             <Link component={RouterLink} to="/signup" sx={{ cursor: 'pointer' }}>
-                                Нет аккаунта? Создать
+                                Еще нет аккаунта? Регистрация
                             </Link>
                         </Grid>
                     </Grid>

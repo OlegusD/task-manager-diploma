@@ -5,8 +5,24 @@ const { requireAuth, requireRole } = require('../auth/middleware')
 const router = Router()
 router.use(requireAuth)
 
-router.get('/statuses', async (_req, res) => {
-    const { rows } = await query('SELECT id, name, position FROM statuses ORDER BY position ASC')
+router.get('/statuses', async (req, res) => {
+    const { project_id } = req.query
+    const params = []
+    const where = []
+    if (project_id) {
+        params.push(project_id)
+        where.push('(project_id IS NULL OR project_id = $1)')
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const { rows } = await query(
+        `
+        SELECT DISTINCT ON (name) id, name, position, project_id
+        FROM statuses
+        ${whereSql}
+        ORDER BY name, project_id DESC, position ASC
+    `,
+        params
+    )
     res.json(rows)
 })
 
@@ -22,25 +38,62 @@ router.get('/task-types', async (_req, res) => {
 
 router.get('/projects', async (_req, res) => {
     const { rows } = await query(
-        'SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC'
+        `SELECT p.id, p.name, p.description, p.created_at,
+            COUNT(pm.user_id)::int AS members_count
+         FROM projects p
+         LEFT JOIN project_members pm ON pm.project_id = p.id
+         GROUP BY p.id
+         ORDER BY p.created_at ASC`
+    )
+    res.json(rows)
+})
+
+router.get('/projects/:id/members', async (req, res) => {
+    const { id } = req.params
+    const { rows } = await query(
+        `SELECT pm.user_id AS id, u.name, u.email
+       FROM project_members pm JOIN users u ON u.id = pm.user_id
+       WHERE pm.project_id = $1`,
+        [id]
     )
     res.json(rows)
 })
 
 router.post('/projects', requireRole('admin'), async (req, res) => {
-    const { name, description } = req.body || {}
+    const { name, description, member_ids = [] } = req.body || {}
     if (!name) return res.status(400).json({ error: 'Missing name' })
-    const idRow = await query(
-        `
-      INSERT INTO projects (id, name, description)
-      VALUES (gen_random_uuid(), $1, $2)
-      ON CONFLICT (name) DO NOTHING
-      RETURNING id;
-    `,
-        [name, description ?? null]
-    )
-    if (!idRow.rows.length) return res.status(409).json({ error: 'Project exists' })
-    res.status(201).json({ id: idRow.rows[0].id })
+    try {
+        await query('BEGIN')
+        const { rows } = await query(
+            `
+        INSERT INTO projects (id, name, description)
+        VALUES (gen_random_uuid(), $1, $2)
+        ON CONFLICT (name) DO NOTHING
+        RETURNING id;
+      `,
+            [name, description ?? null]
+        )
+        if (!rows.length) {
+            await query('ROLLBACK')
+            return res.status(409).json({ error: 'Project exists' })
+        }
+        const newId = rows[0].id
+        if (Array.isArray(member_ids) && member_ids.length) {
+            for (const userId of member_ids) {
+                await query(
+                    `INSERT INTO project_members (project_id, user_id)
+             VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+                    [newId, userId]
+                )
+            }
+        }
+        await query('COMMIT')
+        res.status(201).json({ id: newId })
+    } catch (e) {
+        await query('ROLLBACK')
+        console.error(e)
+        res.status(500).json({ error: 'Failed to create project' })
+    }
 })
 
 router.get('/users', async (_req, res) => {
@@ -50,6 +103,50 @@ router.get('/users', async (_req, res) => {
      ORDER BY u.created_at ASC`
     )
     res.json(rows)
+})
+
+router.post('/statuses', async (req, res) => {
+    const { name, position = 1, project_id } = req.body || {}
+    if (!name) return res.status(400).json({ error: 'Missing name' })
+    if (!project_id) return res.status(400).json({ error: 'Missing project_id' })
+    const { rows } = await query(
+        `
+      INSERT INTO statuses (name, position, project_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (name, project_id) DO NOTHING
+      RETURNING id;
+    `,
+        [name, position, project_id]
+    )
+    if (!rows.length) return res.status(409).json({ error: 'Status exists' })
+    res.status(201).json({ id: rows[0].id })
+})
+
+router.patch('/statuses/:id', async (req, res) => {
+    const { id } = req.params
+    const { name, position } = req.body || {}
+    if (!name && position === undefined) return res.status(400).json({ error: 'No fields' })
+    const sets = []
+    const params = []
+    if (name) {
+        params.push(name)
+        sets.push(`name = $${params.length}`)
+    }
+    if (position !== undefined) {
+        params.push(position)
+        sets.push(`position = $${params.length}`)
+    }
+    params.push(id)
+    await query(`UPDATE statuses SET ${sets.join(', ')} WHERE id = $${params.length}`, params)
+    res.json({ ok: true })
+})
+
+router.delete('/statuses/:id', async (req, res) => {
+    const { id } = req.params
+    const { rows } = await query('SELECT COUNT(*)::int AS cnt FROM tasks WHERE status_id=$1', [id])
+    if (rows[0].cnt > 0) return res.status(400).json({ error: 'Status in use' })
+    await query('DELETE FROM statuses WHERE id=$1', [id])
+    res.json({ ok: true })
 })
 
 module.exports = router

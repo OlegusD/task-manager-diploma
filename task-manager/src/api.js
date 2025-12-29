@@ -40,8 +40,13 @@ export function createProject(token, payload) {
     return api('/refs/projects', { method: 'POST', token, body: payload })
 }
 
-export function listStatuses(token) {
-    return api('/refs/statuses', { token })
+export function listStatuses(token, params = {}) {
+    const search = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') search.append(k, v)
+    })
+    const qs = search.toString()
+    return api(`/refs/statuses${qs ? `?${qs}` : ''}`, { token })
 }
 
 export function listPriorities(token) {
@@ -83,4 +88,63 @@ export function getTask(token, id) {
 
 export function addComment(token, id, body) {
     return api(`/tasks/${id}/comments`, { method: 'POST', token, body: { body } })
+}
+
+export function updateComment(token, taskId, commentId, body) {
+    return api(`/tasks/${taskId}/comments/${commentId}`, {
+        method: 'PATCH',
+        token,
+        body: { body },
+    })
+}
+
+export function deleteCommentApi(token, taskId, commentId) {
+    return api(`/tasks/${taskId}/comments/${commentId}`, { method: 'DELETE', token })
+}
+
+export function createStatus(token, payload) {
+    return api('/refs/statuses', { method: 'POST', token, body: payload })
+}
+
+export function updateStatus(token, id, payload) {
+    return api(`/refs/statuses/${id}`, { method: 'PATCH', token, body: payload })
+}
+
+export function deleteStatus(token, id) {
+    return api(`/refs/statuses/${id}`, { method: 'DELETE', token })
+}
+
+export function deleteUser(token, id) {
+    return api(`/auth/users/${id}`, { method: 'DELETE', token })
+}
+
+export function updateUserRole(token, id, role) {
+    return api(`/auth/users/${id}`, { method: 'PATCH', token, body: { role } })
+}
+
+export function updateUser(token, id, payload) {
+    return api(`/auth/users/${id}`, { method: 'PATCH', token, body: payload })
+}
+
+export function updateMe(token, payload) {
+    return api('/auth/me', { method: 'PATCH', token, body: payload })
+}
+
+export function listRoles(token) {
+    return api('/auth/roles', { token })
+}
+
+export function createRole(token, name, is_admin = false) {
+    return api('/auth/roles', { method: 'POST', token, body: { name, is_admin } })
+}
+
+export function updateRole(token, id, name, is_admin) {
+    const body = {}
+    if (name !== undefined) body.name = name
+    if (is_admin !== undefined) body.is_admin = is_admin
+    return api(`/auth/roles/${id}`, { method: 'PATCH', token, body })
+}
+
+export function deleteRoleApi(token, id) {
+    return api(`/auth/roles/${id}`, { method: 'DELETE', token })
 }

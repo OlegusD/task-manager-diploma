@@ -14,7 +14,7 @@ router.post('/register', async (req, res) => {
     const { rows: exists } = await query('SELECT id FROM users WHERE email=$1', [email])
     if (exists.length) return res.status(409).json({ error: 'Email exists' })
 
-    const { rows: role } = await query(`SELECT id FROM roles WHERE name='user' LIMIT 1;`)
+    const { rows: role } = await query(`SELECT id FROM roles WHERE name='разработчик' LIMIT 1;`)
     const roleId = role[0]?.id
     const hash = bcrypt.hashSync(password, 10)
     const id = uuidv4()
@@ -25,7 +25,7 @@ router.post('/register', async (req, res) => {
     )
 
     const token = jwt.sign(
-        { userId: id, role: 'user', email },
+        { userId: id, role: 'разработчик', email },
         process.env.JWT_SECRET || 'change_me',
         { expiresIn: '30m' }
     )
@@ -63,8 +63,35 @@ router.get('/me', requireAuth, async (req, res) => {
     res.json(rows[0] || null)
 })
 
+router.patch('/me', requireAuth, async (req, res) => {
+    const { name, email, password } = req.body || {}
+    const sets = []
+    const params = []
+    if (name) {
+        params.push(name)
+        sets.push(`name=$${params.length}`)
+    }
+    if (email) {
+        const { rows: exists } = await query('SELECT id FROM users WHERE email=$1 AND id<>$2', [
+            email,
+            req.user.id,
+        ])
+        if (exists.length) return res.status(409).json({ error: 'Email exists' })
+        params.push(email)
+        sets.push(`email=$${params.length}`)
+    }
+    if (password) {
+        params.push(bcrypt.hashSync(password, 10))
+        sets.push(`password_hash=$${params.length}`)
+    }
+    if (!sets.length) return res.status(400).json({ error: 'No fields' })
+    params.push(req.user.id)
+    await query(`UPDATE users SET ${sets.join(', ')} WHERE id=$${params.length}`, params)
+    res.json({ ok: true })
+})
+
 router.post('/users', requireAuth, requireRole('admin'), async (req, res) => {
-    const { email, password, name, role = 'user' } = req.body || {}
+    const { email, password, name, role = 'разработчик' } = req.body || {}
     if (!email || !password || !name) return res.status(400).json({ error: 'Missing fields' })
 
     const { rows: exists } = await query('SELECT id FROM users WHERE email=$1', [email])
@@ -81,6 +108,92 @@ router.post('/users', requireAuth, requireRole('admin'), async (req, res) => {
         [id, email, hash, name, roleId]
     )
     res.status(201).json({ id })
+})
+
+router.delete('/users/:id', requireAuth, requireRole('admin'), async (req, res) => {
+    const { id } = req.params
+    await query('DELETE FROM project_members WHERE user_id=$1', [id])
+    await query('DELETE FROM users WHERE id=$1 AND email <> $2', [id, 'admin@local'])
+    res.json({ ok: true })
+})
+
+router.patch('/users/:id', requireAuth, requireRole('admin'), async (req, res) => {
+    const { id } = req.params
+    const { role, name, email, password } = req.body || {}
+    const sets = []
+    const params = []
+    if (name) {
+        params.push(name)
+        sets.push(`name=$${params.length}`)
+    }
+    if (email) {
+        const { rows: exists } = await query('SELECT id FROM users WHERE email=$1 AND id<>$2', [
+            email,
+            id,
+        ])
+        if (exists.length) return res.status(409).json({ error: 'Email exists' })
+        params.push(email)
+        sets.push(`email=$${params.length}`)
+    }
+    if (password) {
+        params.push(bcrypt.hashSync(password, 10))
+        sets.push(`password_hash=$${params.length}`)
+    }
+    if (role) {
+        const { rows: roleRow } = await query('SELECT id FROM roles WHERE name=$1 LIMIT 1', [role])
+        if (!roleRow.length) return res.status(400).json({ error: 'Unknown role' })
+        params.push(roleRow[0].id)
+        sets.push(`role_id=$${params.length}`)
+    }
+    if (!sets.length) return res.status(400).json({ error: 'No fields' })
+    params.push(id, 'admin@local')
+    await query(
+        `UPDATE users SET ${sets.join(', ')} WHERE id=$${params.length - 1} AND email<>$${params.length}`,
+        params
+    )
+    res.json({ ok: true })
+})
+
+router.get('/roles', requireAuth, requireRole('admin'), async (_req, res) => {
+    const { rows } = await query('SELECT id, name, is_admin FROM roles ORDER BY id ASC')
+    res.json(rows)
+})
+
+router.post('/roles', requireAuth, requireRole('admin'), async (req, res) => {
+    const { name, is_admin = false } = req.body || {}
+    if (!name) return res.status(400).json({ error: 'Missing name' })
+    await query('INSERT INTO roles (name, is_admin) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING', [
+        name,
+        is_admin,
+    ])
+    res.status(201).json({ ok: true })
+})
+
+router.patch('/roles/:id', requireAuth, requireRole('admin'), async (req, res) => {
+    const { id } = req.params
+    const { name, is_admin } = req.body || {}
+    if (!name && is_admin === undefined) return res.status(400).json({ error: 'Missing fields' })
+    const sets = []
+    const params = []
+    if (name) {
+        params.push(name)
+        sets.push(`name=$${params.length}`)
+    }
+    if (is_admin !== undefined) {
+        params.push(!!is_admin)
+        sets.push(`is_admin=$${params.length}`)
+    }
+    params.push(id)
+    await query(`UPDATE roles SET ${sets.join(', ')} WHERE id=$${params.length}`, params)
+    res.json({ ok: true })
+})
+
+router.delete('/roles/:id', requireAuth, requireRole('admin'), async (req, res) => {
+    const { id } = req.params
+    const { rows } = await query('SELECT COUNT(*)::int AS cnt FROM users WHERE role_id=$1', [id])
+    if (rows[0]?.cnt > 0) return res.status(409).json({ error: 'Нельзя удалить роль с пользователями' })
+    await query('DELETE FROM roles WHERE id=$1', [id])
+    res.json({ ok: true })
 })
 
 module.exports = router

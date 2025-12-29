@@ -38,9 +38,13 @@ async function init() {
         await client.query(`
       CREATE TABLE IF NOT EXISTS roles (
         id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL
+        name TEXT UNIQUE NOT NULL,
+        is_admin BOOLEAN NOT NULL DEFAULT FALSE
       );
     `)
+        await client.query(
+            `ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;`
+        )
 
         await client.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -54,12 +58,25 @@ async function init() {
     `)
 
         await client.query(`
+      CREATE TABLE IF NOT EXISTS project_members (
+        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (project_id, user_id)
+      );
+    `)
+
+        await client.query(`
       CREATE TABLE IF NOT EXISTS statuses (
         id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
         position INTEGER NOT NULL
       );
     `)
+        await client.query(`
+      ALTER TABLE statuses
+        ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+    `)
+        await client.query(`ALTER TABLE statuses DROP CONSTRAINT IF EXISTS statuses_name_project_unique;`)
 
         await client.query(`
       CREATE TABLE IF NOT EXISTS priorities (
@@ -139,17 +156,57 @@ async function init() {
     `)
 
         await client.query(`
-      INSERT INTO roles (name) VALUES
-        ('admin'), ('user')
+      ALTER TABLE statuses
+        ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id);
+    `)
+        await client.query(`ALTER TABLE statuses DROP CONSTRAINT IF EXISTS statuses_name_key;`)
+
+        // Удаляем дубли статусов перед установкой ограничения уникальности.
+        // Сначала переназначаем задачи на "канонический" статус с минимальным id.
+        await client.query(`
+      WITH ranked AS (
+        SELECT id, name, project_id,
+               row_number() OVER (PARTITION BY name, project_id ORDER BY id) AS rn,
+               min(id) OVER (PARTITION BY name, project_id) AS keep_id
+        FROM statuses
+      )
+      UPDATE tasks t
+      SET status_id = r.keep_id
+      FROM ranked r
+      WHERE t.status_id = r.id AND r.rn > 1;
+    `)
+
+        await client.query(`
+      WITH ranked AS (
+        SELECT ctid, row_number() OVER (PARTITION BY name, project_id ORDER BY id) AS rn
+        FROM statuses
+      )
+      DELETE FROM statuses s
+      USING ranked r
+      WHERE s.ctid = r.ctid AND r.rn > 1;
+    `)
+
+        await client.query(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_statuses_unique ON statuses(name, project_id);`
+        )
+        await client.query(
+            `CREATE INDEX IF NOT EXISTS idx_statuses_project ON statuses(project_id NULLS FIRST);`
+        )
+
+        await client.query(`
+      UPDATE roles SET name = 'разработчик' WHERE name = 'user';
+      UPDATE roles SET is_admin = TRUE WHERE name = 'admin';
+      INSERT INTO roles (name, is_admin) VALUES
+        ('admin', TRUE), ('разработчик', FALSE)
       ON CONFLICT (name) DO NOTHING;
     `)
 
         await client.query(`
-      INSERT INTO statuses (name, position) VALUES
-        ('To Do', 1),
-        ('In Progress', 2),
-        ('Done', 3)
-      ON CONFLICT (name) DO NOTHING;
+      INSERT INTO statuses (name, position, project_id) VALUES
+        ('To Do', 1, NULL),
+        ('In Progress', 2, NULL),
+        ('Done', 3, NULL)
+      ON CONFLICT (name, project_id) DO NOTHING;
     `)
 
         await client.query(`
@@ -183,6 +240,27 @@ async function init() {
             [defaultProjectId]
         )
         const projectId = projectRows[0]?.id
+        if (projectId) {
+            await client.query(
+                `
+        WITH candidates AS (
+          SELECT id,
+                 row_number() OVER (PARTITION BY name ORDER BY id) AS rn
+          FROM statuses s
+          WHERE project_id IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM statuses s2
+              WHERE s2.name = s.name AND s2.project_id = $1
+            )
+        )
+        UPDATE statuses s
+        SET project_id = $1
+        FROM candidates c
+        WHERE s.id = c.id AND c.rn = 1;
+        `,
+                [projectId]
+            )
+        }
         if (projectId) {
             await client.query(`UPDATE tasks SET project_id = $1 WHERE project_id IS NULL`, [
                 projectId,

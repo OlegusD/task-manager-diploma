@@ -13,7 +13,7 @@ async function getDefaultProjectId() {
 }
 
 router.get('/', async (req, res) => {
-    const { status_id, priority_id, project_id, assignee_id, type_id } = req.query
+    const { status_id, priority_id, project_id, assignee_id, type_id, q, parent_id } = req.query
     const where = []
     const params = []
     if (status_id) {
@@ -35,6 +35,15 @@ router.get('/', async (req, res) => {
     if (type_id) {
         params.push(type_id)
         where.push(`t.type_id = $${params.length}`)
+    }
+    if (parent_id) {
+        params.push(parent_id)
+        where.push(`t.parent_id = $${params.length}`)
+    }
+    if (q) {
+        params.push(`%${q}%`)
+        params.push(`%${q}%`)
+        where.push(`(t.title ILIKE $${params.length - 1} OR t.description ILIKE $${params.length})`)
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const { rows } = await query(
@@ -127,7 +136,8 @@ router.get('/:id', async (req, res) => {
        tt.name AS type_name,
        prj.name AS project_name,
        au.name  AS author_name,
-       asg.name AS assignee_name
+       asg.name AS assignee_name,
+       parent.title AS parent_title
      FROM tasks t
      JOIN statuses  s   ON s.id  = t.status_id
      JOIN priorities p  ON p.id  = t.priority_id
@@ -135,6 +145,7 @@ router.get('/:id', async (req, res) => {
      LEFT JOIN projects prj ON prj.id = t.project_id
      JOIN users     au  ON au.id = t.author_id
      LEFT JOIN users asg ON asg.id = t.assignee_id
+     LEFT JOIN tasks parent ON parent.id = t.parent_id
      WHERE t.id = $1`,
         [id]
     )
@@ -152,7 +163,12 @@ router.get('/:id', async (req, res) => {
      WHERE h.task_id=$1 ORDER BY h.created_at ASC`,
         [id]
     )
-    res.json({ task: rows[0], comments, history })
+    const { rows: children } = await query(
+        `SELECT id, title, status_id FROM tasks WHERE parent_id = $1 ORDER BY created_at ASC`,
+        [id]
+    )
+
+    res.json({ task: rows[0], comments, history, children })
 })
 
 router.patch('/:id', async (req, res) => {
@@ -163,8 +179,9 @@ router.patch('/:id', async (req, res) => {
     )
     if (!owner.length) return res.status(404).json({ error: 'Not found' })
     const task = owner[0]
-    const isOwner = task.author_id === req.user.id
-    if (!isOwner && req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+    const canEdit =
+        task.author_id === req.user.id || task.assignee_id === req.user.id || req.user.role === 'admin'
+    if (!canEdit) return res.status(403).json({ error: 'Forbidden' })
 
     const fieldsMap = {
         title: 'title',
@@ -259,6 +276,47 @@ router.post('/:id/comments', async (req, res) => {
     )
 
     res.status(201).json({ id: commentId })
+})
+
+router.patch('/:taskId/comments/:commentId', async (req, res) => {
+    const { taskId, commentId } = req.params
+    const { body } = req.body || {}
+    if (!body) return res.status(400).json({ error: 'Missing body' })
+
+    const { rows } = await query(
+        `SELECT c.author_id FROM task_comments c WHERE c.id=$1 AND c.task_id=$2`,
+        [commentId, taskId]
+    )
+    if (!rows.length) return res.status(404).json({ error: 'Not found' })
+    const isOwner = rows[0].author_id === req.user.id
+    if (!isOwner && req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+
+    await query(`UPDATE task_comments SET body=$1 WHERE id=$2`, [body, commentId])
+    await query(
+        `INSERT INTO task_history (id, task_id, action, new_value, author_id)
+         VALUES ($1,$2,'comment_updated',$3,$4)`,
+        [uuidv4(), taskId, JSON.stringify({ body }), req.user.id]
+    )
+    res.json({ ok: true })
+})
+
+router.delete('/:taskId/comments/:commentId', async (req, res) => {
+    const { taskId, commentId } = req.params
+    const { rows } = await query(
+        `SELECT c.author_id FROM task_comments c WHERE c.id=$1 AND c.task_id=$2`,
+        [commentId, taskId]
+    )
+    if (!rows.length) return res.status(404).json({ error: 'Not found' })
+    const isOwner = rows[0].author_id === req.user.id
+    if (!isOwner && req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+
+    await query(`DELETE FROM task_comments WHERE id=$1`, [commentId])
+    await query(
+        `INSERT INTO task_history (id, task_id, action, author_id)
+         VALUES ($1,$2,'comment_deleted',$3)`,
+        [uuidv4(), taskId, req.user.id]
+    )
+    res.json({ ok: true })
 })
 
 module.exports = router

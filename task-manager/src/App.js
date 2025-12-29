@@ -1,11 +1,5 @@
-import React from 'react'
-import {
-    BrowserRouter,
-    Routes,
-    Route,
-    Navigate,
-    Link as RouterLink,
-} from 'react-router-dom'
+﻿import React from 'react'
+import { BrowserRouter, Routes, Route, Navigate, Link as RouterLink } from 'react-router-dom'
 import { AppBar, Toolbar, Typography, Button, Box, Stack } from '@mui/material'
 import { AuthProvider, useAuth } from './AuthContext'
 import LoginPage from './pages/LoginPage'
@@ -14,6 +8,7 @@ import DashboardPage from './pages/DashboardPage'
 import BoardPage from './pages/BoardPage'
 import ListPage from './pages/ListPage'
 import TaskPage from './pages/TaskPage'
+import TeamPage from './pages/TeamPage'
 
 function Navigation() {
     const { user, logout } = useAuth()
@@ -31,12 +26,20 @@ function Navigation() {
                     Task Manager
                 </Typography>
                 {user ? (
-                    <>
+                    <Stack direction="row" spacing={1} alignItems="center">
                         <Typography variant="body2" color="text.secondary">
                             {user.name} ({user.role})
                         </Typography>
-                        <Button onClick={logout}>Выйти</Button>
-                    </>
+                        <Button component={RouterLink} to="/" size="small">
+                            Проекты
+                        </Button>
+                        <Button component={RouterLink} to="/team" size="small">
+                            Сотрудники
+                        </Button>
+                        <Button onClick={logout} size="small" variant="outlined">
+                            Выйти
+                        </Button>
+                    </Stack>
                 ) : (
                     <Stack direction="row" spacing={1}>
                         <Button component={RouterLink} to="/login">
@@ -54,7 +57,7 @@ function Navigation() {
 
 function Protected({ children }) {
     const { token, loadingUser } = useAuth()
-    if (loadingUser) return <Box p={3}>Загрузка профиля...</Box>
+    if (loadingUser) return <Box p={3}>Загрузка...</Box>
     if (!token) return <Navigate to="/login" replace />
     return children
 }
@@ -72,6 +75,14 @@ export default function App() {
                         element={
                             <Protected>
                                 <DashboardPage />
+                            </Protected>
+                        }
+                    />
+                    <Route
+                        path="/team"
+                        element={
+                            <Protected>
+                                <TeamPage />
                             </Protected>
                         }
                     />

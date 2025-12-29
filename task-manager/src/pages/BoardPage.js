@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+﻿import React, { useEffect, useMemo, useState } from 'react'
 import {
     Box,
     Container,
@@ -13,8 +13,14 @@ import {
     Snackbar,
     Alert,
     Divider,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogActions,
+    Pagination,
 } from '@mui/material'
 import { useParams } from 'react-router-dom'
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd'
 import { io } from 'socket.io-client'
 import {
     listTasks,
@@ -26,6 +32,13 @@ import {
     updateTask,
     deleteTask,
     API_URL,
+    getTask,
+    createStatus,
+    updateStatus,
+    deleteStatus,
+    addComment,
+    updateComment,
+    deleteCommentApi,
 } from '../api'
 import { useAuth } from '../AuthContext'
 
@@ -41,13 +54,26 @@ function deadlineColor(task) {
     return 'error.light'
 }
 
+function shiftToInputDate(val) {
+    if (!val) return ''
+    const d = new Date(val)
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+    return d.toISOString().slice(0, 10)
+}
+
+function toApiDate(val) {
+    return val ? `${val}T12:00:00Z` : null
+}
+
 function formatDate(val) {
-    return val ? new Date(val).toLocaleDateString() : '—'
+    if (!val) return '-'
+    return shiftToInputDate(val)
 }
 
 export default function BoardPage() {
     const { projectId } = useParams()
-    const { token } = useAuth()
+    const { token, user } = useAuth()
+    const isAdmin = user?.role === 'admin'
     const [statuses, setStatuses] = useState([])
     const [priorities, setPriorities] = useState([])
     const [types, setTypes] = useState([])
@@ -56,6 +82,22 @@ export default function BoardPage() {
     const [error, setError] = useState('')
     const [notif, setNotif] = useState('')
     const [editingId, setEditingId] = useState(null)
+    const [columnDraft, setColumnDraft] = useState('')
+    const [filters, setFilters] = useState({
+        q: '',
+        assignee_id: '',
+        status_id: '',
+        priority_id: '',
+    })
+    const [modalOpen, setModalOpen] = useState(false)
+    const [modalTask, setModalTask] = useState(null)
+    const [taskModalOpen, setTaskModalOpen] = useState(false)
+    const [modalComment, setModalComment] = useState('')
+    const [modalCommentsPage, setModalCommentsPage] = useState(1)
+    const [modalHistoryPage, setModalHistoryPage] = useState(1)
+    const [modalEditCommentId, setModalEditCommentId] = useState(null)
+    const [modalEditCommentBody, setModalEditCommentBody] = useState('')
+    const pageSize = 5
     const [form, setForm] = useState({
         title: '',
         description: '',
@@ -81,30 +123,29 @@ export default function BoardPage() {
             loadTasks()
         })
         return () => socket.disconnect()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     async function loadRefs() {
         try {
             const [sts, prs, tts, us] = await Promise.all([
-                listStatuses(token),
+                listStatuses(token, { project_id: projectId }),
                 listPriorities(token),
                 listTaskTypes(token),
                 listUsers(token),
             ])
-            setStatuses(sts)
+            setStatuses(sts || [])
             setPriorities(prs)
             setTypes(tts)
             setUsers(us)
+            const today = shiftToInputDate(new Date())
+            const threeDays = shiftToInputDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000))
             setForm((prev) => ({
                 ...prev,
-                status_id: sts[0]?.id ?? '',
+                status_id: (sts && sts[0]?.id) ?? '',
                 priority_id: prs[1]?.id ?? prs[0]?.id ?? '',
                 type_id: tts[0]?.id ?? '',
-                start_date: prev.start_date || new Date().toISOString().slice(0, 10),
-                due_date:
-                    prev.due_date ||
-                    new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+                start_date: prev.start_date || today,
+                due_date: prev.due_date || threeDays,
             }))
         } catch (e) {
             setError(e.message)
@@ -113,7 +154,13 @@ export default function BoardPage() {
 
     async function loadTasks() {
         try {
-            const data = await listTasks(token, { project_id: projectId })
+            const data = await listTasks(token, {
+                project_id: projectId,
+                q: filters.q,
+                assignee_id: filters.assignee_id,
+                status_id: filters.status_id,
+                priority_id: filters.priority_id,
+            })
             setTasks(data)
         } catch (e) {
             setError(e.message)
@@ -130,10 +177,7 @@ export default function BoardPage() {
         return map
     }, [tasks, statuses])
 
-    const parentOptions = useMemo(
-        () => tasks.filter((t) => !t.parent_id),
-        [tasks]
-    )
+    const parentOptions = useMemo(() => tasks.filter((t) => !t.parent_id), [tasks])
 
     function resetForm() {
         setEditingId(null)
@@ -143,15 +187,15 @@ export default function BoardPage() {
             description: '',
             assignee_id: '',
             parent_id: '',
-            start_date: new Date().toISOString().slice(0, 10),
-            due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+            start_date: shiftToInputDate(new Date()),
+            due_date: shiftToInputDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)),
         }))
     }
-
     async function handleSubmit(e) {
-        e.preventDefault()
+        e?.preventDefault()
         if (!form.title) return
         try {
+            const normalizeDate = (d) => toApiDate(d)
             const payload = {
                 ...form,
                 project_id: projectId,
@@ -160,6 +204,8 @@ export default function BoardPage() {
                 type_id: form.type_id ? Number(form.type_id) : null,
                 status_id: form.status_id ? Number(form.status_id) : null,
                 priority_id: form.priority_id ? Number(form.priority_id) : null,
+                start_date: normalizeDate(form.start_date),
+                due_date: normalizeDate(form.due_date),
             }
             if (editingId) {
                 await updateTask(token, editingId, payload)
@@ -169,6 +215,7 @@ export default function BoardPage() {
                 setNotif('Задача создана')
             }
             resetForm()
+            setTaskModalOpen(false)
             loadTasks()
         } catch (e) {
             setError(e.message)
@@ -195,6 +242,7 @@ export default function BoardPage() {
     }
 
     function startEdit(task) {
+        if (!isAdmin && task.assignee_id !== user?.id) return
         setEditingId(task.id)
         setForm({
             title: task.title,
@@ -204,11 +252,148 @@ export default function BoardPage() {
             type_id: task.type_id || '',
             assignee_id: task.assignee_id || '',
             parent_id: task.parent_id || '',
-            start_date: task.start_date ? task.start_date.slice(0, 10) : '',
-            due_date: task.due_date ? task.due_date.slice(0, 10) : '',
+            start_date: shiftToInputDate(task.start_date),
+            due_date: shiftToInputDate(task.due_date),
         })
+        setTaskModalOpen(true)
     }
 
+    async function handleDragEnd(result) {
+        if (!result.destination) return
+        if (result.type === 'column') {
+            const reordered = Array.from(statuses).sort((a, b) => a.position - b.position)
+            const [removed] = reordered.splice(result.source.index, 1)
+            reordered.splice(result.destination.index, 0, removed)
+            const withPos = reordered.map((s, idx) => ({ ...s, position: idx + 1 }))
+            setStatuses(withPos)
+            const changed = [
+                withPos[result.source.index],
+                withPos[result.destination.index],
+            ].filter(Boolean)
+            for (const s of changed) {
+                try {
+                    await updateStatus(token, s.id, { position: s.position })
+                } catch (e) {
+                    setError(e.message)
+                }
+            }
+            return
+        }
+        const taskId = result.draggableId
+        const newStatus = Number(result.destination.droppableId)
+        const task = tasks.find((t) => t.id === taskId)
+        if (!task || task.status_id === newStatus) return
+        await handleStatusChange(taskId, newStatus)
+    }
+
+    async function handleCreateColumn(e) {
+        e.preventDefault()
+        if (!columnDraft.trim()) return
+        try {
+            await createStatus(token, {
+                name: columnDraft.trim(),
+                position: statuses.length + 1,
+                project_id: projectId,
+            })
+            setColumnDraft('')
+            await loadRefs()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function handleRenameStatus(id) {
+        const nextName = window.prompt('Новое название статуса?')
+        if (!nextName) return
+        try {
+            await updateStatus(token, id, { name: nextName })
+            loadRefs()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function handleDeleteStatus(id) {
+        if (!window.confirm('Удалить колонку?')) return
+        try {
+            await deleteStatus(token, id)
+            loadRefs()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function openModal(taskId) {
+        try {
+            const data = await getTask(token, taskId)
+            setModalTask(data)
+            setModalComment('')
+            setModalCommentsPage(1)
+            setModalHistoryPage(1)
+            setModalOpen(true)
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function handleAddModalComment(e) {
+        e.preventDefault()
+        if (!modalTask || !modalComment.trim()) return
+        try {
+            await addComment(token, modalTask.task.id, modalComment.trim())
+            setModalComment('')
+            const data = await getTask(token, modalTask.task.id)
+            setModalTask(data)
+            setModalCommentsPage(1)
+            setModalEditCommentId(null)
+            setModalEditCommentBody('')
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    function startEditModalComment(comment) {
+        setModalEditCommentId(comment.id)
+        setModalEditCommentBody(comment.body)
+    }
+
+    async function saveModalComment(commentId) {
+        if (!modalTask) return
+        const body = modalEditCommentBody.trim()
+        if (!body) return
+        try {
+            await updateComment(token, modalTask.task.id, commentId, body)
+            setModalEditCommentId(null)
+            setModalEditCommentBody('')
+            const data = await getTask(token, modalTask.task.id)
+            setModalTask(data)
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function deleteModalComment(commentId) {
+        if (!modalTask) return
+        try {
+            await deleteCommentApi(token, modalTask.task.id, commentId)
+            const data = await getTask(token, modalTask.task.id)
+            setModalTask(data)
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function saveModal(updated) {
+        if (!modalTask) return
+        try {
+            await updateTask(token, modalTask.task.id, updated)
+            setModalOpen(false)
+            setModalTask(null)
+            loadTasks()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
     return (
         <Container sx={{ py: 4 }}>
             <Typography variant="h5" sx={{ mb: 2 }} fontWeight={800}>
@@ -220,251 +405,397 @@ export default function BoardPage() {
                 </Alert>
             ) : null}
 
-            <Box component="form" onSubmit={handleSubmit} sx={{ mb: 3, p: 2, borderRadius: 1, bgcolor: 'background.paper', border: '1px solid', borderColor: 'divider' }}>
-                <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-                    {editingId ? 'Редактирование задачи' : 'Новая задача'}
-                </Typography>
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-                    <TextField
-                        label="Заголовок"
-                        value={form.title}
-                        onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
-                        required
-                        fullWidth
-                        size="small"
-                    />
-                    <TextField
-                        label="Описание"
-                        value={form.description}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, description: e.target.value }))
-                        }
-                        fullWidth
-                        size="small"
-                    />
-                </Stack>
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mt: 1 }}>
-                    <TextField
-                        select
-                        label="Статус"
-                        value={form.status_id}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, status_id: Number(e.target.value) }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 180 }}
-                    >
-                        {statuses.map((s) => (
-                            <MenuItem key={s.id} value={s.id}>
-                                {s.name}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                    <TextField
-                        select
-                        label="Приоритет"
-                        value={form.priority_id}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, priority_id: Number(e.target.value) }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 160 }}
-                    >
-                        {priorities.map((p) => (
-                            <MenuItem key={p.id} value={p.id}>
-                                {p.name}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                    <TextField
-                        select
-                        label="Тип"
-                        value={form.type_id}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, type_id: Number(e.target.value) }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 140 }}
-                    >
-                        {types.map((t) => (
-                            <MenuItem key={t.id} value={t.id}>
-                                {t.name}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                    <TextField
-                        select
-                        label="Исполнитель"
-                        value={form.assignee_id}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, assignee_id: e.target.value }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 200 }}
-                    >
-                        <MenuItem value="">Не выбрано</MenuItem>
-                        {users.map((u) => (
-                            <MenuItem key={u.id} value={u.id}>
-                                {u.name}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                </Stack>
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mt: 1 }}>
-                    <TextField
-                        select
-                        label="Родительская задача"
-                        value={form.parent_id}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, parent_id: e.target.value }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 200 }}
-                    >
-                        <MenuItem value="">Нет</MenuItem>
-                        {parentOptions.map((t) => (
-                            <MenuItem key={t.id} value={t.id}>
-                                {t.title}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                    <TextField
-                        label="Начало"
-                        type="date"
-                        value={form.start_date}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, start_date: e.target.value }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 160 }}
-                        InputLabelProps={{ shrink: true }}
-                    />
-                    <TextField
-                        label="Дедлайн"
-                        type="date"
-                        value={form.due_date}
-                        onChange={(e) =>
-                            setForm((prev) => ({ ...prev, due_date: e.target.value }))
-                        }
-                        size="small"
-                        sx={{ minWidth: 160 }}
-                        InputLabelProps={{ shrink: true }}
-                    />
-                </Stack>
-                <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-                    <Button type="submit" variant="contained">
-                        {editingId ? 'Сохранить' : 'Создать'}
-                    </Button>
-                    {editingId ? (
-                        <Button variant="text" onClick={resetForm}>
-                            Отменить
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }}>
+                <TextField
+                    size="small"
+                    label="Поиск"
+                    value={filters.q}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, q: e.target.value }))}
+                />
+                <TextField
+                    size="small"
+                    select
+                    label="Статус"
+                    value={filters.status_id}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, status_id: e.target.value }))}
+                    sx={{ minWidth: 140 }}
+                >
+                    <MenuItem value="">Все</MenuItem>
+                    {statuses.map((s) => (
+                        <MenuItem key={s.id} value={s.id}>
+                            {s.name}
+                        </MenuItem>
+                    ))}
+                </TextField>
+                        <TextField
+                            size="small"
+                            select
+                            label="Исполнитель"
+                            value={filters.assignee_id}
+                            onChange={(e) =>
+                                setFilters((prev) => ({ ...prev, assignee_id: e.target.value }))
+                            }
+                            sx={{ minWidth: 180 }}
+                            disabled={!isAdmin}
+                        >
+                    <MenuItem value="">Все</MenuItem>
+                    {users.map((u) => (
+                        <MenuItem key={u.id} value={u.id}>
+                            {u.name}
+                        </MenuItem>
+                    ))}
+                </TextField>
+                <TextField
+                    size="small"
+                    select
+                    label="Приоритет"
+                    value={filters.priority_id}
+                    onChange={(e) =>
+                        setFilters((prev) => ({ ...prev, priority_id: e.target.value }))
+                    }
+                    sx={{ minWidth: 160 }}
+                >
+                    <MenuItem value="">Все</MenuItem>
+                    {priorities.map((p) => (
+                        <MenuItem key={p.id} value={p.id}>
+                            {p.name}
+                        </MenuItem>
+                    ))}
+                </TextField>
+                <Button variant="outlined" onClick={loadTasks}>
+                    Фильтровать
+                </Button>
+                        <Button variant="contained" onClick={() => setTaskModalOpen(true)}>
+                            Создать задачу
                         </Button>
-                    ) : null}
-                </Stack>
-            </Box>
+                    </Stack>
 
-            <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ overflowX: 'auto' }}>
-                {statuses
-                    .slice()
-                    .sort((a, b) => a.position - b.position)
-                    .map((col) => {
-                        const colTasks = tasksByStatus.get(col.id) || []
-                        return (
-                            <Box key={col.id} sx={{ width: 320, flexShrink: 0 }}>
-                                <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-                                    {col.name}
-                                </Typography>
-                                <Box
-                                    sx={{
-                                        p: 1,
-                                        borderRadius: 1,
-                                        bgcolor: 'background.paper',
-                                        minHeight: 80,
-                                        border: '1px solid',
-                                        borderColor: 'divider',
-                                    }}
-                                >
-                                    {colTasks.map((t) => (
-                                        <Card
-                                            key={t.id}
-                                            variant="outlined"
-                                            sx={{
-                                                mb: 1,
-                                                borderLeft: `4px solid`,
-                                                borderLeftColor: deadlineColor(t),
-                                            }}
-                                        >
-                                            <CardContent sx={{ p: 1.25 }}>
-                                                <Typography variant="body2" fontWeight={700}>
-                                                    {t.title}
-                                                </Typography>
-                                                <Typography variant="caption" color="text.secondary">
-                                                    {t.description || 'Нет описания'}
-                                                </Typography>
-                                                <Divider sx={{ my: 1 }} />
-                                                <Stack
-                                                    direction="row"
-                                                    spacing={1}
-                                                    alignItems="center"
-                                                    sx={{ flexWrap: 'wrap', rowGap: 0.5 }}
-                                                >
-                                                    <Chip label={`Приоритет: ${t.priority_name}`} size="small" />
-                                                    <Chip
-                                                        label={`Тип: ${t.type_name || '—'}`}
-                                                        size="small"
-                                                        color="info"
-                                                    />
-                                                    {t.assignee_name ? (
-                                                        <Chip label={`Исп: ${t.assignee_name}`} size="small" />
-                                                    ) : null}
-                                                </Stack>
-                                                <Typography
-                                                    variant="caption"
-                                                    sx={{ display: 'block', mt: 0.5, color: 'text.secondary' }}
-                                                >
-                                                    С {formatDate(t.start_date)} до {formatDate(t.due_date)}
-                                                </Typography>
-
-                                                <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                                                    <TextField
-                                                        select
-                                                        size="small"
-                                                        value={t.status_id}
-                                                        onChange={(e) =>
-                                                            handleStatusChange(t.id, Number(e.target.value))
-                                                        }
-                                                        sx={{ minWidth: 140 }}
-                                                    >
-                                                        {statuses.map((s) => (
-                                                            <MenuItem key={s.id} value={s.id}>
-                                                                {s.name}
-                                                            </MenuItem>
-                                                        ))}
-                                                    </TextField>
-                                                    <Button size="small" onClick={() => startEdit(t)}>
-                                                        Править
-                                                    </Button>
-                                                    <Button
-                                                        size="small"
-                                                        color="error"
-                                                        onClick={() => handleDelete(t.id)}
-                                                    >
-                                                        Удалить
-                                                    </Button>
-                                                </Stack>
-                                            </CardContent>
-                                        </Card>
-                                    ))}
-                                    {!colTasks.length ? (
-                                        <Typography color="text.secondary" variant="caption">
-                                            Нет задач
-                                        </Typography>
-                                    ) : null}
-                                </Box>
-                            </Box>
-                        )
-                    })}
+            <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={2}
+                alignItems="flex-start"
+                sx={{ mb: 2 }}
+            >
+                <Box
+                    component="form"
+                    onSubmit={handleCreateColumn}
+                    sx={{
+                        width: { xs: '100%', md: 280 },
+                        p: 2,
+                        borderRadius: 1,
+                        bgcolor: 'background.paper',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        flexShrink: 0,
+                    }}
+                >
+                    <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                        Новая колонка
+                    </Typography>
+                    <TextField
+                        fullWidth
+                        size="small"
+                        label="Название"
+                        value={columnDraft}
+                        onChange={(e) => setColumnDraft(e.target.value)}
+                    />
+                    <Button type="submit" variant="contained" sx={{ mt: 1 }}>
+                        Добавить
+                    </Button>
+                </Box>
             </Stack>
+
+            <DragDropContext onDragEnd={handleDragEnd}>
+                <Droppable droppableId="columns" direction="horizontal" type="column">
+                    {(dropProvided) => (
+                        <Stack
+                            direction="row"
+                            spacing={2}
+                            alignItems="flex-start"
+                            sx={{ overflowX: 'auto' }}
+                            ref={dropProvided.innerRef}
+                            {...dropProvided.droppableProps}
+                        >
+                            {statuses
+                                .slice()
+                                .sort((a, b) => a.position - b.position)
+                                .map((col, colIdx) => {
+                                    const colTasks = tasksByStatus.get(col.id) || []
+                                    return (
+                                        <Draggable
+                                            draggableId={`col-${col.id}`}
+                                            index={colIdx}
+                                            key={col.id}
+                                        >
+                                            {(colDrag) => (
+                                                <Box
+                                                    ref={colDrag.innerRef}
+                                                    {...colDrag.draggableProps}
+                                                    sx={{ width: 320, flexShrink: 0 }}
+                                                >
+                                                    <Stack
+                                                        direction="row"
+                                                        justifyContent="space-between"
+                                                        alignItems="center"
+                                                        {...colDrag.dragHandleProps}
+                                                    >
+                                                        <Typography
+                                                            variant="subtitle1"
+                                                            fontWeight={700}
+                                                            sx={{ mb: 1 }}
+                                                        >
+                                                            {col.name}
+                                                        </Typography>
+                                                        <Stack direction="row" spacing={1}>
+                                                            <Button
+                                                                size="small"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation()
+                                                                    handleRenameStatus(col.id)
+                                                                }}
+                                                            >
+                                                                Ред.
+                                                            </Button>
+                                                            <Button
+                                                                size="small"
+                                                                color="error"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation()
+                                                                    handleDeleteStatus(col.id)
+                                                                }}
+                                                            >
+                                                                Удал.
+                                                            </Button>
+                                                        </Stack>
+                                                    </Stack>
+                                                    <Droppable
+                                                        droppableId={String(col.id)}
+                                                        type="task"
+                                                    >
+                                                        {(provided) => (
+                                                            <Box
+                                                                ref={provided.innerRef}
+                                                                {...provided.droppableProps}
+                                                                sx={{
+                                                                    p: 1,
+                                                                    borderRadius: 1,
+                                                                    bgcolor: 'background.paper',
+                                                                    minHeight: 120,
+                                                                    border: '1px solid',
+                                                                    borderColor: 'divider',
+                                                                }}
+                                                            >
+                                                                {colTasks.map((t, idx) => (
+                                                                    <Draggable
+                                                                        draggableId={t.id}
+                                                                        index={idx}
+                                                                        key={t.id}
+                                                                    >
+                                                                        {(dragProps) => (
+                                                                            <Card
+                                                                                ref={
+                                                                                    dragProps.innerRef
+                                                                                }
+                                                                                {...dragProps.draggableProps}
+                                                                                {...dragProps.dragHandleProps}
+                                                                                variant="outlined"
+                                                                                sx={{
+                                                                                    mb: 1,
+                                                                                    borderLeft: `4px solid`,
+                                                                                    borderLeftColor:
+                                                                                        deadlineColor(
+                                                                                            t
+                                                                                        ),
+                                                                                }}
+                                                                                onClick={() =>
+                                                                                    openModal(t.id)
+                                                                                }
+                                                                            >
+                                                                                <CardContent
+                                                                                    sx={{ p: 1.25 }}
+                                                                                >
+                                                                                    <Typography
+                                                                                        variant="body2"
+                                                                                        fontWeight={
+                                                                                            700
+                                                                                        }
+                                                                                    >
+                                                                                        {t.title}
+                                                                                    </Typography>
+                                                                                    <Typography
+                                                                                        variant="caption"
+                                                                                        color="text.secondary"
+                                                                                    >
+                                                                                        {t.description ||
+                                                                                            'Нет описания'}
+                                                                                    </Typography>
+                                                                                    <Divider
+                                                                                        sx={{
+                                                                                            my: 1,
+                                                                                        }}
+                                                                                    />
+                                                                                    <Stack
+                                                                                        direction="row"
+                                                                                        spacing={1}
+                                                                                        alignItems="center"
+                                                                                        sx={{
+                                                                                            flexWrap:
+                                                                                                'wrap',
+                                                                                            rowGap: 0.5,
+                                                                                        }}
+                                                                                    >
+                                                                                        <Chip
+                                                                                            label={`Приоритет: ${t.priority_name}`}
+                                                                                            size="small"
+                                                                                        />
+                                                                                        <Chip
+                                                                                            label={`Тип: ${
+                                                                                                t.type_name ||
+                                                                                                '—'
+                                                                                            }`}
+                                                                                            size="small"
+                                                                                            color="info"
+                                                                                        />
+                                                                                        {t.assignee_name ? (
+                                                                                            <Chip
+                                                                                                label={`Исп: ${t.assignee_name}`}
+                                                                                                size="small"
+                                                                                            />
+                                                                                        ) : null}
+                                                                                    </Stack>
+                                                                                    <Typography
+                                                                                        variant="caption"
+                                                                                        sx={{
+                                                                                            display:
+                                                                                                'block',
+                                                                                            mt: 0.5,
+                                                                                            color: 'text.secondary',
+                                                                                        }}
+                                                                                    >
+                                                                                        С{' '}
+                                                                                        {formatDate(
+                                                                                            t.start_date
+                                                                                        )}{' '}
+                                                                                        до{' '}
+                                                                                        {formatDate(
+                                                                                            t.due_date
+                                                                                        )}
+                                                                                    </Typography>
+
+                                                                                    <Stack
+                                                                                        direction="row"
+                                                                                        spacing={1}
+                                                                                        sx={{
+                                                                                            mt: 1,
+                                                                                        }}
+                                                                                    >
+                                                                                        {(isAdmin ||
+                                                                                            t.assignee_id ===
+                                                                                                user?.id) && (
+                                                                                            <>
+                                                                                                <TextField
+                                                                                                    select
+                                                                                                    size="small"
+                                                                                                    value={
+                                                                                                        t.status_id
+                                                                                                    }
+                                                                                                    onChange={(
+                                                                                                        e
+                                                                                                    ) => {
+                                                                                                        e.stopPropagation()
+                                                                                                        handleStatusChange(
+                                                                                                            t.id,
+                                                                                                            Number(
+                                                                                                                e
+                                                                                                                    .target
+                                                                                                                    .value
+                                                                                                            )
+                                                                                                        )
+                                                                                                    }}
+                                                                                                    sx={{
+                                                                                                        minWidth: 140,
+                                                                                                    }}
+                                                                                                >
+                                                                                                    {statuses.map(
+                                                                                                        (
+                                                                                                            s
+                                                                                                        ) => (
+                                                                                                            <MenuItem
+                                                                                                                key={
+                                                                                                                    s.id
+                                                                                                                }
+                                                                                                                value={
+                                                                                                                    s.id
+                                                                                                                }
+                                                                                                            >
+                                                                                                                {
+                                                                                                                    s.name
+                                                                                                                }
+                                                                                                            </MenuItem>
+                                                                                                        )
+                                                                                                    )}
+                                                                                                </TextField>
+                                                                                                {isAdmin ? (
+                                                                                                    <>
+                                                                                                        <Button
+                                                                                                            size="small"
+                                                                                                            onClick={(
+                                                                                                                e
+                                                                                                            ) => {
+                                                                                                                e.stopPropagation()
+                                                                                                                startEdit(
+                                                                                                                    t
+                                                                                                                )
+                                                                                                            }}
+                                                                                                        >
+                                                                                                            Править
+                                                                                                        </Button>
+                                                                                                        <Button
+                                                                                                            size="small"
+                                                                                                            color="error"
+                                                                                                            onClick={(
+                                                                                                                ev
+                                                                                                            ) => {
+                                                                                                                ev.stopPropagation()
+                                                                                                                handleDelete(
+                                                                                                                    t.id
+                                                                                                                )
+                                                                                                            }}
+                                                                                                        >
+                                                                                                            Удалить
+                                                                                                        </Button>
+                                                                                                    </>
+                                                                                                ) : null}
+                                                                                            </>
+                                                                                        )}
+                                                                                    </Stack>
+                                                                                </CardContent>
+                                                                            </Card>
+                                                                        )}
+                                                                    </Draggable>
+                                                                ))}
+                                                                {provided.placeholder}
+                                                                {!colTasks.length ? (
+                                                                    <Typography
+                                                                        color="text.secondary"
+                                                                        variant="caption"
+                                                                    >
+                                                                        Нет задач
+                                                                    </Typography>
+                                                                ) : null}
+                                                            </Box>
+                                                        )}
+                                                    </Droppable>
+                                                </Box>
+                                            )}
+                                        </Draggable>
+                                    )
+                                })}
+                            {dropProvided.placeholder}
+                        </Stack>
+                    )}
+                </Droppable>
+            </DragDropContext>
 
             <Snackbar
                 open={Boolean(notif)}
@@ -476,6 +807,546 @@ export default function BoardPage() {
                     {notif}
                 </Alert>
             </Snackbar>
+
+            <Dialog open={modalOpen} fullWidth maxWidth="md" onClose={() => setModalOpen(false)}>
+                {modalTask ? (
+                    <>
+                        <DialogTitle>{modalTask.task.title}</DialogTitle>
+                        <DialogContent dividers>
+                            <Stack spacing={2}>
+                                <TextField
+                                    label="Название"
+                                    fullWidth
+                                    value={modalTask.task.title}
+                                    onChange={(e) =>
+                                        setModalTask((prev) => ({
+                                            ...prev,
+                                            task: { ...prev.task, title: e.target.value },
+                                        }))
+                                    }
+                                />
+                                <TextField
+                                    label="Описание"
+                                    fullWidth
+                                    multiline
+                                    minRows={3}
+                                    value={modalTask.task.description || ''}
+                                    onChange={(e) =>
+                                        setModalTask((prev) => ({
+                                            ...prev,
+                                            task: { ...prev.task, description: e.target.value },
+                                        }))
+                                    }
+                                />
+                                <Stack direction="row" spacing={1} flexWrap="wrap" rowGap={1}>
+                                    <TextField
+                                        select
+                                        label="Статус"
+                                        value={modalTask.task.status_id}
+                                        onChange={(e) =>
+                                            setModalTask((prev) => ({
+                                                ...prev,
+                                                task: {
+                                                    ...prev.task,
+                                                    status_id: Number(e.target.value),
+                                                },
+                                            }))
+                                        }
+                                        size="small"
+                                        sx={{ minWidth: 160 }}
+                                        disabled={
+                                            !isAdmin &&
+                                            modalTask.task.assignee_id &&
+                                            modalTask.task.assignee_id !== user?.id
+                                        }
+                                    >
+                                        {statuses.map((s) => (
+                                            <MenuItem key={s.id} value={s.id}>
+                                                {s.name}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
+                                    <TextField
+                                        select
+                                        label="Приоритет"
+                                        value={modalTask.task.priority_id}
+                                        onChange={(e) =>
+                                            setModalTask((prev) => ({
+                                                ...prev,
+                                                task: {
+                                                    ...prev.task,
+                                                    priority_id: Number(e.target.value),
+                                                },
+                                            }))
+                                        }
+                                        size="small"
+                                        sx={{ minWidth: 140 }}
+                                        disabled={
+                                            !isAdmin &&
+                                            modalTask.task.assignee_id &&
+                                            modalTask.task.assignee_id !== user?.id
+                                        }
+                                    >
+                                        {priorities.map((p) => (
+                                            <MenuItem key={p.id} value={p.id}>
+                                                {p.name}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
+                                    <TextField
+                                        select
+                                        label="Тип"
+                                        value={modalTask.task.type_id || ''}
+                                        onChange={(e) =>
+                                            setModalTask((prev) => ({
+                                                ...prev,
+                                                task: {
+                                                    ...prev.task,
+                                                    type_id: e.target.value
+                                                        ? Number(e.target.value)
+                                                        : null,
+                                                },
+                                            }))
+                                        }
+                                        size="small"
+                                        sx={{ minWidth: 140 }}
+                                        disabled={
+                                            !isAdmin &&
+                                            modalTask.task.assignee_id &&
+                                            modalTask.task.assignee_id !== user?.id
+                                        }
+                                    >
+                                        <MenuItem value="">-</MenuItem>
+                                        {types.map((t) => (
+                                            <MenuItem key={t.id} value={t.id}>
+                                                {t.name}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
+                                    <TextField
+                                        select
+                                        label="Исполнитель"
+                                        value={modalTask.task.assignee_id || ''}
+                                        onChange={(e) =>
+                                            setModalTask((prev) => ({
+                                                ...prev,
+                                                task: {
+                                                    ...prev.task,
+                                                    assignee_id: e.target.value || null,
+                                                },
+                                            }))
+                                        }
+                                        size="small"
+                                        sx={{ minWidth: 200 }}
+                                        disabled={!isAdmin}
+                                    >
+                                        <MenuItem value="">Не выбрано</MenuItem>
+                                        {users.map((u) => (
+                                            <MenuItem key={u.id} value={u.id}>
+                                                {u.name}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
+                                </Stack>
+                                <Stack spacing={1}>
+                                    <Typography variant="subtitle2">Дочерние задачи</Typography>
+                                    {modalTask.children && modalTask.children.length ? (
+                                        modalTask.children.map((c) => (
+                                            <Button
+                                                key={c.id}
+                                                size="small"
+                                                onClick={() => openModal(c.id)}
+                                                variant="text"
+                                                sx={{ justifyContent: 'flex-start' }}
+                                            >
+                                                {c.title}
+                                            </Button>
+                                        ))
+                                    ) : (
+                                        <Typography variant="caption" color="text.secondary">
+                                            Дочерних задач нет
+                                        </Typography>
+                                    )}
+                                </Stack>
+                                <Divider />
+                                <Typography variant="subtitle2">Комментарии</Typography>
+                                <Stack spacing={1}>
+                                    {modalTask.comments
+                                        ?.slice(
+                                            (modalCommentsPage - 1) * pageSize,
+                                            modalCommentsPage * pageSize
+                                        )
+                                        .map((c) => (
+                                            <Box
+                                                key={c.id}
+                                                sx={{
+                                                    border: '1px solid',
+                                                    borderColor: 'divider',
+                                                    p: 1,
+                                                    borderRadius: 1,
+                                                }}
+                                            >
+                                                <Stack
+                                                    direction="row"
+                                                    justifyContent="space-between"
+                                                    alignItems="center"
+                                                    spacing={1}
+                                                >
+                                                    <Typography
+                                                        variant="caption"
+                                                        color="text.secondary"
+                                                    >
+                                                        {c.author_name} ·{' '}
+                                                        {new Date(c.created_at).toLocaleString()}
+                                                    </Typography>
+                                                    {(isAdmin || c.author_id === user?.id) && (
+                                                        <Stack direction="row" spacing={1}>
+                                                            {modalEditCommentId === c.id ? (
+                                                                <>
+                                                                    <Button
+                                                                        size="small"
+                                                                        onClick={() =>
+                                                                            saveModalComment(c.id)
+                                                                        }
+                                                                    >
+                                                                        Сохранить
+                                                                    </Button>
+                                                                    <Button
+                                                                        size="small"
+                                                                        color="inherit"
+                                                                        onClick={() => {
+                                                                            setModalEditCommentId(
+                                                                                null
+                                                                            )
+                                                                            setModalEditCommentBody(
+                                                                                ''
+                                                                            )
+                                                                        }}
+                                                                    >
+                                                                        Отмена
+                                                                    </Button>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Button
+                                                                        size="small"
+                                                                        onClick={() =>
+                                                                            startEditModalComment(
+                                                                                c
+                                                                            )
+                                                                        }
+                                                                    >
+                                                                        Редактировать
+                                                                    </Button>
+                                                                    <Button
+                                                                        size="small"
+                                                                        color="error"
+                                                                        onClick={() =>
+                                                                            deleteModalComment(c.id)
+                                                                        }
+                                                                    >
+                                                                        Удалить
+                                                                    </Button>
+                                                                </>
+                                                            )}
+                                                        </Stack>
+                                                    )}
+                                                </Stack>
+                                                {modalEditCommentId === c.id ? (
+                                                    <TextField
+                                                        multiline
+                                                        minRows={2}
+                                                        size="small"
+                                                        fullWidth
+                                                        sx={{ mt: 1 }}
+                                                        value={modalEditCommentBody}
+                                                        onChange={(e) =>
+                                                            setModalEditCommentBody(
+                                                                e.target.value
+                                                            )
+                                                        }
+                                                    />
+                                                ) : (
+                                                    <Typography variant="body2">{c.body}</Typography>
+                                                )}
+                                            </Box>
+                                        ))}
+                                    {!modalTask.comments?.length ? (
+                                        <Typography variant="caption" color="text.secondary">
+                                            Комментариев нет
+                                        </Typography>
+                                    ) : (
+                                        <Pagination
+                                            size="small"
+                                            page={modalCommentsPage}
+                                            count={Math.max(
+                                                1,
+                                                Math.ceil(
+                                                    (modalTask.comments?.length || 0) / pageSize
+                                                )
+                                            )}
+                                            onChange={(_, page) => setModalCommentsPage(page)}
+                                        />
+                                    )}
+                                    <Box
+                                        component="form"
+                                        onSubmit={handleAddModalComment}
+                                        sx={{ display: 'flex', gap: 1, alignItems: 'center' }}
+                                    >
+                                        <TextField
+                                            size="small"
+                                            fullWidth
+                                            label="Новый комментарий"
+                                            value={modalComment}
+                                            onChange={(e) => setModalComment(e.target.value)}
+                                        />
+                                        <Button type="submit" variant="outlined">
+                                            Добавить
+                                        </Button>
+                                    </Box>
+                                </Stack>
+                                <Divider />
+                                <Typography variant="subtitle2">История</Typography>
+                                <Stack spacing={1}>
+                                    {modalTask.history
+                                        ?.slice(
+                                            (modalHistoryPage - 1) * pageSize,
+                                            modalHistoryPage * pageSize
+                                        )
+                                        .map((h) => (
+                                            <Box
+                                                key={h.id}
+                                                sx={{ border: '1px dashed', p: 1, borderRadius: 1 }}
+                                            >
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {h.action} ·{' '}
+                                                    {new Date(h.created_at).toLocaleString()} ·{' '}
+                                                    {h.author_name || 'system'}
+                                                </Typography>
+                                                {h.new_value ? (
+                                                    <Typography
+                                                        variant="body2"
+                                                        sx={{ whiteSpace: 'pre-wrap' }}
+                                                    >
+                                                        {JSON.stringify(h.new_value, null, 2)}
+                                                    </Typography>
+                                                ) : null}
+                                            </Box>
+                                        ))}
+                                    {!modalTask.history?.length ? (
+                                        <Typography variant="caption" color="text.secondary">
+                                            История пуста
+                                        </Typography>
+                                    ) : (
+                                        <Pagination
+                                            size="small"
+                                            page={modalHistoryPage}
+                                            count={Math.max(
+                                                1,
+                                                Math.ceil(
+                                                    (modalTask.history?.length || 0) / pageSize
+                                                )
+                                            )}
+                                            onChange={(_, page) => setModalHistoryPage(page)}
+                                        />
+                                    )}
+                                </Stack>
+                            </Stack>
+                        </DialogContent>
+                        <DialogActions>
+                            <Button onClick={() => setModalOpen(false)}>Закрыть</Button>
+                            <Button
+                                variant="contained"
+                                disabled={
+                                    !isAdmin &&
+                                    modalTask.task.assignee_id &&
+                                    modalTask.task.assignee_id !== user?.id
+                                }
+                                onClick={() =>
+                                    saveModal({
+                                        title: modalTask.task.title,
+                                        description: modalTask.task.description,
+                                        status_id: modalTask.task.status_id,
+                                        priority_id: modalTask.task.priority_id,
+                                        type_id: modalTask.task.type_id,
+                                        assignee_id: isAdmin ? modalTask.task.assignee_id : undefined,
+                                        start_date: toApiDate(
+                                            shiftToInputDate(modalTask.task.start_date)
+                                        ),
+                                        due_date: toApiDate(
+                                            shiftToInputDate(modalTask.task.due_date)
+                                        ),
+                                    })
+                                }
+                            >
+                                Сохранить
+                            </Button>
+                        </DialogActions>
+                    </>
+                ) : null}
+            </Dialog>
+
+            <Dialog
+                open={taskModalOpen}
+                fullWidth
+                maxWidth="md"
+                onClose={() => setTaskModalOpen(false)}
+            >
+                <DialogTitle>{editingId ? 'Редактировать задачу' : 'Создать задачу'}</DialogTitle>
+                <DialogContent dividers>
+                    <Stack spacing={2}>
+                        <TextField
+                            label="Заголовок"
+                            value={form.title}
+                            onChange={(e) =>
+                                setForm((prev) => ({ ...prev, title: e.target.value }))
+                            }
+                            required
+                            fullWidth
+                        />
+                        <TextField
+                            label="Описание"
+                            value={form.description}
+                            onChange={(e) =>
+                                setForm((prev) => ({ ...prev, description: e.target.value }))
+                            }
+                            fullWidth
+                        />
+                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+                        <TextField
+                            select
+                            label="Статус"
+                            value={form.status_id}
+                            onChange={(e) =>
+                                setForm((prev) => ({
+                                    ...prev,
+                                    status_id: Number(e.target.value),
+                                }))
+                            }
+                            size="small"
+                            sx={{ minWidth: 180 }}
+                            disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
+                        >
+                            {statuses.map((s) => (
+                                <MenuItem key={s.id} value={s.id}>
+                                    {s.name}
+                                </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                select
+                                label="Приоритет"
+                                value={form.priority_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({
+                                        ...prev,
+                                        priority_id: Number(e.target.value),
+                                    }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 160 }}
+                                disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
+                            >
+                                {priorities.map((p) => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                        {p.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                select
+                                label="Тип"
+                                value={form.type_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({
+                                        ...prev,
+                                        type_id: Number(e.target.value),
+                                    }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 140 }}
+                                disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
+                            >
+                                {types.map((t) => (
+                                    <MenuItem key={t.id} value={t.id}>
+                                        {t.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                select
+                                label="Исполнитель"
+                                value={form.assignee_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, assignee_id: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 200 }}
+                            disabled={!isAdmin}
+                            >
+                            <MenuItem value="">Не выбрано</MenuItem>
+                            {users.map((u) => (
+                                <MenuItem key={u.id} value={u.id}>
+                                    {u.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                        </Stack>
+                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+                            <TextField
+                                select
+                                label="Родительская задача"
+                                value={form.parent_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, parent_id: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 200 }}
+                                disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
+                            >
+                                <MenuItem value="">Нет</MenuItem>
+                                {parentOptions.map((t) => (
+                                    <MenuItem key={t.id} value={t.id}>
+                                        {t.title}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                label="Начало"
+                                type="date"
+                                value={form.start_date}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, start_date: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 160 }}
+                                InputLabelProps={{ shrink: true }}
+                            />
+                            <TextField
+                                label="Дедлайн"
+                                type="date"
+                                value={form.due_date}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, due_date: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 160 }}
+                                InputLabelProps={{ shrink: true }}
+                            />
+                        </Stack>
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                <Button onClick={() => setTaskModalOpen(false)}>Отменить</Button>
+                <Button
+                    variant="contained"
+                    onClick={handleSubmit}
+                    disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
+                >
+                    {editingId ? 'Сохранить' : 'Создать'}
+                </Button>
+            </DialogActions>
+            </Dialog>
         </Container>
     )
 }
