@@ -116,6 +116,7 @@ export default function BoardPage() {
     const { projectId } = useParams()
     const { token, user } = useAuth()
     const isAdmin = user?.role === 'admin'
+    const isGuest = user?.role === 'гость'
     const [statuses, setStatuses] = useState([])
     const [priorities, setPriorities] = useState([])
     const [types, setTypes] = useState([])
@@ -143,6 +144,20 @@ export default function BoardPage() {
     const [modalSpentUnit, setModalSpentUnit] = useState('minutes')
     const [modalEstimateValue, setModalEstimateValue] = useState(0)
     const [modalEstimateUnit, setModalEstimateUnit] = useState('minutes')
+    const [trashTasks, setTrashTasks] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem('trashTasks') || '[]')
+        } catch {
+            return []
+        }
+    })
+    const [deletedStatusIds, setDeletedStatusIds] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem('deletedStatuses') || '[]')
+        } catch {
+            return []
+        }
+    })
     const pageSize = 5
     const [form, setForm] = useState({
         title: '',
@@ -165,16 +180,16 @@ export default function BoardPage() {
         if (!token) return
         loadRefs()
         loadTasks()
-    }, [token, projectId])
+    }, [token, projectId]) // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         const socket = io(API_URL, { transports: ['websocket'] })
         socket.on('task_status_changed', (payload) => {
-            setNotif(`Статус задачи ${payload.taskId} изменен`)
+            setNotif(`Статус задачи ${payload.taskId} изменён`)
             loadTasks()
         })
         return () => socket.disconnect()
-    }, [])
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
     async function loadRefs() {
         try {
@@ -216,10 +231,104 @@ export default function BoardPage() {
                 assignee_id: filters.assignee_id,
                 priority_id: filters.priority_id,
             })
-            setTasks(data)
+            const activeIds = new Set([
+                ...activeStatuses.map((s) => s.id),
+                ...deletedStatusIds,
+            ])
+            const deletedIds = new Set(trashTasks.map((t) => t.id))
+            const keep = []
+            const toTrash = []
+            data.forEach((t) => {
+                if (deletedIds.has(t.id)) return
+                if (!activeStatuses.length) {
+                    keep.push(t)
+                    return
+                }
+                const hasActive = activeIds.has(t.status_id)
+                if (!t.status_id || !hasActive) {
+                    toTrash.push(t)
+                    return
+                }
+                keep.push(t)
+            })
+            if (toTrash.length) {
+                const known = new Set(trashTasks.map((t) => t.id))
+                const merged = [...trashTasks]
+                toTrash.forEach((t) => {
+                    if (!known.has(t.id)) {
+                        merged.push(t)
+                        known.add(t.id)
+                    }
+                })
+                syncTrash(merged)
+            }
+            setTasks(keep)
         } catch (e) {
             setError(e.message)
         }
+    }
+
+    function syncTrash(next) {
+        setTrashTasks(next)
+        try {
+            localStorage.setItem('trashTasks', JSON.stringify(next))
+        } catch {}
+    }
+
+    function syncDeletedStatuses(next) {
+        setDeletedStatusIds(next)
+        try {
+            localStorage.setItem('deletedStatuses', JSON.stringify(next))
+        } catch {}
+    }
+
+    function moveTaskToTrash(taskId) {
+        const t = tasks.find((task) => task.id === taskId)
+        if (!t) return
+        setTasks((prev) => prev.filter((task) => task.id !== taskId))
+        syncTrash([...trashTasks.filter((task) => task.id !== taskId), t])
+        setTasks((prev) =>
+            prev.map((task) => (task.parent_id === taskId ? { ...task, parent_id: null } : task))
+        )
+        setNotif('Задача перемещена в удаленные')
+    }
+
+    async function handleStatusChange(taskId, statusId) {
+        if (isGuest) return
+        try {
+            await updateTask(token, taskId, { status_id: statusId })
+            loadTasks()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    function startEdit(task) {
+        if (!isAdmin && task.assignee_id !== user?.id) return
+        const spent = fromMinutes(task.spent_minutes)
+        const estimated = fromMinutes(task.estimated_minutes)
+        setEditingId(task.id)
+        setForm({
+            title: task.title,
+            description: task.description || '',
+            status_id: task.status_id,
+            priority_id: task.priority_id,
+            type_id: task.type_id || '',
+            assignee_id: task.assignee_id || '',
+            parent_id: task.parent_id || '',
+            start_date: shiftToInputDate(task.start_date),
+            due_date: shiftToInputDate(task.due_date),
+            spent_value: spent.value,
+            spent_unit: spent.unit,
+            estimated_value: estimated.value,
+            estimated_unit: estimated.unit,
+            author_id: task.author_id,
+        })
+        setTaskModalOpen(true)
+    }
+
+    async function handleDelete(id) {
+        moveTaskToTrash(id)
     }
 
     const priorityWeight = useMemo(() => {
@@ -242,25 +351,44 @@ export default function BoardPage() {
         return [...tasks].sort(cmp)
     }, [tasks, filters.sort, priorityWeight])
 
-    const extraStatuses = useMemo(() => {
-        const known = new Set(statuses.map((s) => s.id))
-        const extras = []
-        sortedTasks.forEach((t) => {
-            if (t.status_id && !known.has(t.status_id)) {
-                known.add(t.status_id)
-                extras.push({
-                    id: t.status_id,
-                    name: t.status_name || 'Статус',
-                    position: (statuses.length + extras.length + 1) * 10,
-                    project_id: t.project_id,
-                    readonly: true,
-                })
+    const activeStatuses = useMemo(() => {
+        const map = new Map()
+        statuses.forEach((s) => {
+            if (!deletedStatusIds.includes(s.id) && !map.has(s.id)) {
+                map.set(s.id, s)
             }
         })
-        return extras
-    }, [sortedTasks, statuses])
+        return Array.from(map.values()).sort((a, b) => a.position - b.position)
+    }, [statuses, deletedStatusIds])
 
-    const statusOptions = useMemo(() => [...statuses, ...extraStatuses], [statuses, extraStatuses])
+        const extraStatuses = useMemo(() => {
+        const baseDeleted = deletedStatusIds
+            .map((id) => statuses.find((s) => s.id === id))
+            .filter(Boolean)
+        const knownIds = new Set([...activeStatuses, ...baseDeleted].map((s) => s.id))
+        const knownNames = new Set([...activeStatuses, ...baseDeleted].map((s) => (s.name || '').toLowerCase()))
+        const extras = [...baseDeleted]
+        sortedTasks.forEach((t) => {
+            if (!t.status_id) return
+            const lowerName = (t.status_name || '').toLowerCase()
+            if (knownIds.has(t.status_id) || knownNames.has(lowerName)) return
+            knownIds.add(t.status_id)
+            knownNames.add(lowerName)
+            extras.push({
+                id: t.status_id,
+                name: t.status_name || 'Статус',
+                position: (activeStatuses.length + extras.length + 1) * 10,
+                project_id: t.project_id,
+                readonly: true,
+            })
+        })
+        return extras
+    }, [sortedTasks, activeStatuses, deletedStatusIds, statuses])
+
+    const statusOptions = useMemo(
+        () => [...activeStatuses, ...extraStatuses],
+        [activeStatuses, extraStatuses]
+    )
 
     const tasksByStatus = useMemo(() => {
         const map = new Map()
@@ -331,53 +459,11 @@ export default function BoardPage() {
         }
     }
 
-    async function handleDelete(id) {
-        try {
-            await deleteTask(token, id)
-            setNotif('Задача удалена')
-            loadTasks()
-        } catch (e) {
-            setError(e.message)
-        }
-    }
-
-    async function handleStatusChange(taskId, statusId) {
-        try {
-            await updateTask(token, taskId, { status_id: statusId })
-            loadTasks()
-        } catch (e) {
-            setError(e.message)
-        }
-    }
-
-    function startEdit(task) {
-        if (!isAdmin && task.assignee_id !== user?.id) return
-        setEditingId(task.id)
-        const spent = fromMinutes(task.spent_minutes)
-        const estimated = fromMinutes(task.estimated_minutes)
-        setForm({
-            title: task.title,
-            description: task.description || '',
-            status_id: task.status_id,
-            priority_id: task.priority_id,
-            type_id: task.type_id || '',
-            assignee_id: task.assignee_id || '',
-            parent_id: task.parent_id || '',
-            start_date: shiftToInputDate(task.start_date),
-            due_date: shiftToInputDate(task.due_date),
-            spent_value: spent.value,
-            spent_unit: spent.unit,
-            estimated_value: estimated.value,
-            estimated_unit: estimated.unit,
-            author_id: task.author_id,
-        })
-        setTaskModalOpen(true)
-    }
-
     async function handleDragEnd(result) {
         if (!result.destination) return
+        if (isGuest && result.type === 'task') return
         if (result.type === 'column') {
-            if (!isAdmin) return
+            if (!isAdmin || isGuest) return
             const reordered = Array.from(statuses).sort((a, b) => a.position - b.position)
             const [removed] = reordered.splice(result.source.index, 1)
             reordered.splice(result.destination.index, 0, removed)
@@ -397,19 +483,51 @@ export default function BoardPage() {
             return
         }
         const taskId = result.draggableId
-        const newStatus = Number(result.destination.droppableId)
-        const task = tasks.find((t) => t.id === taskId)
+        const destId = result.destination.droppableId
+        const sourceId = result.source.droppableId
+        const taskFromTrash = trashTasks.find((t) => t.id === taskId)
+        const taskFromBoard = tasks.find((t) => t.id === taskId)
+
+        if (destId === 'trash') {
+            if (sourceId === 'trash') return
+            if (taskFromBoard) moveTaskToTrash(taskId)
+            return
+        }
+
+        if (sourceId === 'trash' && destId !== 'trash') {
+            if (!taskFromTrash) return
+            const newStatus = Number(destId)
+            syncTrash(trashTasks.filter((t) => t.id !== taskId))
+            try {
+                await updateTask(token, taskId, { status_id: newStatus })
+                loadTasks()
+            } catch (e) {
+                setError(e.message)
+            }
+            return
+        }
+
+        const newStatus = Number(destId)
+        const task = taskFromBoard
         if (!task || task.status_id === newStatus) return
         await handleStatusChange(taskId, newStatus)
     }
 
     async function handleCreateColumn(e) {
+        if (isGuest) return
         e.preventDefault()
         if (!columnDraft.trim()) return
+        const nameExists = activeStatuses.some(
+            (s) => (s.name || '').toLowerCase() === columnDraft.trim().toLowerCase()
+        )
+        if (nameExists) {
+            setError('������� � ����� ��������� ��� ����')
+            return
+        }
         try {
             await createStatus(token, {
                 name: columnDraft.trim(),
-                position: statuses.length + 1,
+                position: activeStatuses.length + 1,
                 project_id: projectId,
             })
             setColumnDraft('')
@@ -420,7 +538,7 @@ export default function BoardPage() {
     }
 
     async function handleRenameStatus(id) {
-        const nextName = window.prompt('Новое название статуса?')
+        const nextName = window.prompt('����� �������� �������?')
         if (!nextName) return
         try {
             await updateStatus(token, id, { name: nextName })
@@ -431,12 +549,24 @@ export default function BoardPage() {
     }
 
     async function handleDeleteStatus(id) {
-        if (!window.confirm('Удалить колонку?')) return
+        if (isGuest) return
+        const colTasks = tasksByStatus.get(id) || []
+        const warn =
+            colTasks.length > 0
+                ? 'В колонке есть задачи. Удалить колонку? Колонка будет скрыта, задачи останутся в блоке удаленных колонок.'
+                : 'Удалить колонку?'
+        if (!window.confirm(warn)) return
+        if (colTasks.length) {
+            setStatuses((prev) => prev.filter((s) => s.id !== id))
+            syncDeletedStatuses((prev) => (prev.includes(id) ? prev : [...prev, id]))
+            return
+        }
         try {
             await deleteStatus(token, id)
             loadRefs()
+            setTimeout(loadTasks, 200)
         } catch (e) {
-            setError(e.message)
+            setError(e.message || 'Статус используется задачами')
         }
     }
 
@@ -460,6 +590,7 @@ export default function BoardPage() {
     }
 
     async function handleAddModalComment(e) {
+        if (isGuest) return
         e.preventDefault()
         if (!modalTask || !modalComment.trim()) return
         try {
@@ -507,6 +638,7 @@ export default function BoardPage() {
     }
 
     async function saveModal(updated) {
+        if (isGuest) return
         if (!modalTask) return
         try {
             await updateTask(token, modalTask.task.id, updated)
@@ -585,9 +717,9 @@ export default function BoardPage() {
                     <MenuItem value="title">Название</MenuItem>
                 </TextField>
                 <Button variant="outlined" onClick={loadTasks}>
-                    Фильтровать
+                    Обновить
                 </Button>
-                <Button variant="contained" onClick={() => setTaskModalOpen(true)}>
+                <Button variant="contained" onClick={() => setTaskModalOpen(true)} disabled={isGuest}>
                     Создать задачу
                 </Button>
             </Stack>
@@ -621,34 +753,32 @@ export default function BoardPage() {
                         value={columnDraft}
                         onChange={(e) => setColumnDraft(e.target.value)}
                     />
-                    <Button type="submit" variant="contained" sx={{ mt: 1 }}>
+                    <Button type="submit" variant="contained" sx={{ mt: 1 }} disabled={isGuest}>
                         Добавить
                     </Button>
                 </Box>
             </Stack>
 
-            <DragDropContext onDragEnd={handleDragEnd}>
-                <Droppable droppableId="columns" direction="horizontal" type="column">
-                    {(dropProvided) => (
-                        <Stack
-                            direction="row"
-                            spacing={2}
-                            alignItems="flex-start"
-                            sx={{ overflowX: 'auto' }}
-                            ref={dropProvided.innerRef}
-                            {...dropProvided.droppableProps}
-                        >
-                            {statuses
-                                .slice()
-                                .sort((a, b) => a.position - b.position)
-                                .map((col, colIdx) => {
+                                                <DragDropContext onDragEnd={handleDragEnd}>
+                <Stack spacing={2}>
+                    <Droppable droppableId="columns" direction="horizontal" type="column">
+                        {(dropProvided) => (
+                            <Stack
+                                direction="row"
+                                spacing={2}
+                                alignItems="flex-start"
+                                sx={{ overflowX: 'auto' }}
+                                ref={dropProvided.innerRef}
+                                {...dropProvided.droppableProps}
+                            >
+                                {activeStatuses.map((col, colIdx) => {
                                     const colTasks = tasksByStatus.get(col.id) || []
                                     return (
                                         <Draggable
+                                            key={col.id}
                                             draggableId={`col-${col.id}`}
                                             index={colIdx}
-                                            key={col.id}
-                                            isDragDisabled={!isAdmin}
+                                            isDragDisabled={!isAdmin || isGuest}
                                         >
                                             {(colDrag) => (
                                                 <Box
@@ -662,41 +792,17 @@ export default function BoardPage() {
                                                         alignItems="center"
                                                         {...colDrag.dragHandleProps}
                                                     >
-                                                        <Typography
-                                                            variant="subtitle1"
-                                                            fontWeight={700}
-                                                            sx={{ mb: 1 }}
-                                                        >
+                                                        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
                                                             {col.name}
                                                         </Typography>
                                                         {isAdmin ? (
                                                             <Stack direction="row" spacing={1}>
-                                                                <Button
-                                                                    size="small"
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation()
-                                                                        handleRenameStatus(col.id)
-                                                                    }}
-                                                                >
-                                                                    Ред.
-                                                                </Button>
-                                                                <Button
-                                                                    size="small"
-                                                                    color="error"
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation()
-                                                                        handleDeleteStatus(col.id)
-                                                                    }}
-                                                                >
-                                                                    Удал.
-                                                                </Button>
+                                                                <Button size="small" onClick={(e) => { e.stopPropagation(); handleRenameStatus(col.id); }}>Ред.</Button>
+                                                                <Button size="small" color="error" onClick={(e) => { e.stopPropagation(); handleDeleteStatus(col.id); }}>Удал.</Button>
                                                             </Stack>
                                                         ) : null}
                                                     </Stack>
-                                                    <Droppable
-                                                        droppableId={String(col.id)}
-                                                        type="task"
-                                                    >
+                                                    <Droppable droppableId={String(col.id)} type="task">
                                                         {(provided) => (
                                                             <Box
                                                                 ref={provided.innerRef}
@@ -712,39 +818,26 @@ export default function BoardPage() {
                                                             >
                                                                 {colTasks.map((t, idx) => (
                                                                     <Draggable
-                                                                        draggableId={t.id}
-                                                                        index={idx}
                                                                         key={t.id}
+                                                                        draggableId={String(t.id)}
+                                                                        index={idx}
+                                                                        isDragDisabled={isGuest}
                                                                     >
                                                                         {(dragProps) => (
                                                                             <Card
-                                                                                ref={
-                                                                                    dragProps.innerRef
-                                                                                }
+                                                                                ref={dragProps.innerRef}
                                                                                 {...dragProps.draggableProps}
                                                                                 {...dragProps.dragHandleProps}
                                                                                 variant="outlined"
                                                                                 sx={{
                                                                                     mb: 1,
-                                                                                    borderLeft: `4px solid`,
-                                                                                    borderLeftColor:
-                                                                                        deadlineColor(
-                                                                                            t
-                                                                                        ),
+                                                                                    borderLeft: '4px solid',
+                                                                                    borderLeftColor: deadlineColor(t),
                                                                                 }}
-                                                                                onClick={() =>
-                                                                                    openModal(t.id)
-                                                                                }
+                                                                                onClick={() => openModal(t.id)}
                                                                             >
-                                                                                <CardContent
-                                                                                    sx={{ p: 1.25 }}
-                                                                                >
-                                                                                    <Typography
-                                                                                        variant="body2"
-                                                                                        fontWeight={
-                                                                                            700
-                                                                                        }
-                                                                                    >
+                                                                                <CardContent sx={{ p: 1.25 }}>
+                                                                                    <Typography variant="body2" fontWeight={700}>
                                                                                         {t.title}
                                                                                     </Typography>
                                                                                     {t.parent_id ? (
@@ -753,173 +846,52 @@ export default function BoardPage() {
                                                                                             to={`/tasks/${t.parent_id}`}
                                                                                             size="small"
                                                                                             variant="text"
+                                                                                            onClick={(e) => e.stopPropagation()}
                                                                                         >
                                                                                             Родительская задача
                                                                                         </Button>
                                                                                     ) : null}
-                                                                                    <Typography
-                                                                                        variant="caption"
-                                                                                        color="text.secondary"
-                                                                                    >
-                                                                                        {t.description ||
-                                                                                            'Нет описания'}
+                                                                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                                                        {t.description || 'Нет описания'}
                                                                                     </Typography>
-                                                                                    <Divider
-                                                                                        sx={{
-                                                                                            my: 1,
-                                                                                        }}
-                                                                                    />
-                                                                                    <Stack
-                                                                                        direction="row"
-                                                                                        spacing={1}
-                                                                                        alignItems="center"
-                                                                                        sx={{
-                                                                                            flexWrap:
-                                                                                                'wrap',
-                                                                                            rowGap: 0.5,
-                                                                                        }}
-                                                                                    >
-                                                                                        <Chip
-                                                                                            label={`Приоритет: ${t.priority_name}`}
-                                                                                            size="small"
-                                                                                        />
-                                                                                        <Chip
-                                                                                            label={`Тип: ${
-                                                                                                t.type_name ||
-                                                                                                '-'
-                                                                                            }`}
-                                                                                            size="small"
-                                                                                            color="info"
-                                                                                        />
-                                                                                        <Chip
-                                                                                            label={`Затрачено: ${formatSpent(
-                                                                                                t.spent_minutes || 0
-                                                                                            )}`}
-                                                                                            size="small"
-                                                                                            color={spentColor(
-                                                                                                t.spent_minutes,
-                                                                                                t.estimated_minutes
-                                                                                            )}
-                                                                                        />
-                                                                                        <Chip
-                                                                                            label={`Оценка: ${formatSpent(
-                                                                                                t.estimated_minutes || 0
-                                                                                            )}`}
-                                                                                            size="small"
-                                                                                            color="default"
-                                                                                        />
+                                                                                    <Divider sx={{ my: 1 }} />
+                                                                                    <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
+                                                                                        <Chip label={`Приоритет: ${t.priority_name || '—'}`} size="small" />
+                                                                                        <Chip label={`Тип: ${t.type_name || '—'}`} size="small" color="info" />
+                                                                                        <Chip label={`Затрачено: ${formatSpent(t.spent_minutes)}`} size="small" color={spentColor(t.spent_minutes, t.estimated_minutes)} />
+                                                                                        <Chip label={`Оценка: ${formatSpent(t.estimated_minutes)}`} size="small" />
                                                                                         {t.assignee_name ? (
-                                                                                            <Chip
-                                                                                                label={`Исп: ${t.assignee_name}`}
-                                                                                                size="small"
-                                                                                            />
+                                                                                            <Chip label={`Исп: ${t.assignee_name}`} size="small" />
                                                                                         ) : null}
                                                                                     </Stack>
-                                                                                    <Typography
-                                                                                        variant="caption"
-                                                                                        sx={{
-                                                                                            display:
-                                                                                                'block',
-                                                                                            mt: 0.5,
-                                                                                            color: 'text.secondary',
-                                                                                        }}
-                                                                                        >
-                                                                                            С{' '}
-                                                                                            {formatDate(
-                                                                                                t.start_date
-                                                                                            )}{' '}
-                                                                                            до{' '}
-                                                                                            {formatDate(
-                                                                                                t.due_date
-                                                                                            )}
-                                                                                        </Typography>
-
-                                                                                    <Stack
-                                                                                        direction="row"
-                                                                                        spacing={1}
-                                                                                        sx={{
-                                                                                            mt: 1,
-                                                                                        }}
-                                                                                    >
-                                                                                        {(isAdmin ||
-                                                                                            t.assignee_id ===
-                                                                                                user?.id) && (
-                                                                                            <>
-                                                                                                <TextField
-                                                                                                    select
-                                                                                                    size="small"
-                                                                                                    value={
-                                                                                                        t.status_id
-                                                                                                    }
-                                                                                                    onChange={(
-                                                                                                        e
-                                                                                                    ) => {
-                                                                                                        e.stopPropagation()
-                                                                                                        handleStatusChange(
-                                                                                                            t.id,
-                                                                                                            Number(
-                                                                                                                e
-                                                                                                                    .target
-                                                                                                                    .value
-                                                                                                            )
-                                                                                                        )
-                                                                                                    }}
-                                                                                                    sx={{
-                                                                                                        minWidth: 140,
-                                                                                                    }}
-                                                                                                >
-                                                                                                    {statusOptions.map(
-                                                                                                        (
-                                                                                                            s
-                                                                                                        ) => (
-                                                                                                            <MenuItem
-                                                                                                                key={
-                                                                                                                    s.id
-                                                                                                                }
-                                                                                                                value={
-                                                                                                                    s.id
-                                                                                                                }
-                                                                                                            >
-                                                                                                                {
-                                                                                                                    s.name
-                                                                                                                }
-                                                                                                            </MenuItem>
-                                                                                                        )
-                                                                                                    )}
-                                                                                                </TextField>
-                                                                                                {isAdmin ? (
-                                                                                                    <>
-                                                                                                        <Button
-                                                                                                            size="small"
-                                                                                                            onClick={(
-                                                                                                                e
-                                                                                                            ) => {
-                                                                                                                e.stopPropagation()
-                                                                                                                startEdit(
-                                                                                                                    t
-                                                                                                                )
-                                                                                                            }}
-                                                                                                       >
-                                                                                                            Править
-                                                                                                        </Button>
-                                                                                                        <Button
-                                                                                                            size="small"
-                                                                                                            color="error"
-                                                                                                            onClick={(
-                                                                                                                ev
-                                                                                                            ) => {
-                                                                                                                ev.stopPropagation()
-                                                                                                                handleDelete(
-                                                                                                               t.id
-                                                                                                            )
-                                                                                                        }}
-                                                                                                    >
-                                                                                                            Удалить
-                                                                                                        </Button>
-                                                                                                    </>
-                                                                                                ) : null}
-                                                                                            </>
+                                                                                    <Typography variant="caption" sx={{ display: 'block', mt: 0.5, color: 'text.secondary' }}>
+                                                                                        С {formatDate(t.start_date)} до {formatDate(t.due_date)}
+                                                                                    </Typography>
+                                                                                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                                                                                        {(isAdmin || (!isGuest && t.assignee_id === user?.id)) && (
+                                                                                            <TextField
+                                                                                                select
+                                                                                                size="small"
+                                                                                                value={t.status_id}
+                                                                                                onChange={(e) => {
+                                                                                                    e.stopPropagation()
+                                                                                                    handleStatusChange(t.id, Number(e.target.value))
+                                                                                                }}
+                                                                                                sx={{ minWidth: 140 }}
+                                                                                            >
+                                                                                                {statusOptions.map((s) => (
+                                                                                                    <MenuItem key={s.id} value={s.id}>
+                                                                                                        {s.name}
+                                                                                                    </MenuItem>
+                                                                                                ))}
+                                                                                            </TextField>
                                                                                         )}
+                                                                                        {isAdmin ? (
+                                                                                            <>
+                                                                                                <Button size="small" onClick={(e) => { e.stopPropagation(); startEdit(t); }}>Править</Button>
+                                                                                                <Button size="small" color="error" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Удалить</Button>
+                                                                                            </>
+                                                                                        ) : null}
                                                                                     </Stack>
                                                                                 </CardContent>
                                                                             </Card>
@@ -928,12 +900,7 @@ export default function BoardPage() {
                                                                 ))}
                                                                 {provided.placeholder}
                                                                 {!colTasks.length ? (
-                                                                    <Typography
-                                                                        color="text.secondary"
-                                                                        variant="caption"
-                                                                    >
-                                                                        Нет задач
-                                                                    </Typography>
+                                                                    <Typography color="text.secondary" variant="caption">Нет задач</Typography>
                                                                 ) : null}
                                                             </Box>
                                                         )}
@@ -943,79 +910,194 @@ export default function BoardPage() {
                                         </Draggable>
                                     )
                                 })}
-                            {dropProvided.placeholder}
-                        </Stack>
-                    )}
-                </Droppable>
-            </DragDropContext>
+                                {dropProvided.placeholder}
+                            </Stack>
+                        )}
+                    </Droppable>
 
-            {extraStatuses.length ? (
-                <Stack direction="row" spacing={2} sx={{ mt: 2, flexWrap: 'wrap' }}>
-                    {extraStatuses.map((col) => {
-                        const colTasks = tasksByStatus.get(col.id) || []
-                        return (
-                            <Box
-                                key={col.id}
-                                sx={{
-                                    width: 320,
-                                    flexShrink: 0,
-                                }}
-                            >
-                                <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-                                    {col.name}
+                    {extraStatuses.length ? (
+                        <Stack spacing={1}>
+                            <Typography variant="subtitle2" color="text.secondary">
+                                Удаленные колонки
+                            </Typography>
+                            <Stack direction="row" spacing={2} alignItems="flex-start" sx={{ overflowX: 'auto' }}>
+                                {extraStatuses
+                                    .map((col) => {
+                                        const colTasks = tasksByStatus.get(col.id) || []
+                                        if (!colTasks.length) return null
+                                        return (
+                                            <Droppable droppableId={String(col.id)} type="task" key={col.id}>
+                                                {(provided) => (
+                                                    <Box
+                                                        ref={provided.innerRef}
+                                                        {...provided.droppableProps}
+                                                        sx={{
+                                                            width: 320,
+                                                            flexShrink: 0,
+                                                            p: 1,
+                                                            borderRadius: 1,
+                                                            border: '1px dashed',
+                                                            borderColor: 'divider',
+                                                            bgcolor: 'background.paper',
+                                                        }}
+                                                    >
+                                                        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                                                            <Typography variant="subtitle1" fontWeight={700}>
+                                                                Удаленные · {col.name}
+                                                            </Typography>
+                                                            <Stack direction="row" spacing={1}>
+                                                                <Button
+                                                                    size="small"
+                                                                    variant="outlined"
+                                                                    disabled={isGuest}
+                                                                    onClick={() => {
+                                                                        syncDeletedStatuses((prev) => prev.filter((id) => id !== col.id))
+                                                                        setStatuses((prev) => [...prev, col].sort((a, b) => a.position - b.position))
+                                                                    }}
+                                                                >
+                                                                    Восстановить
+                                                                </Button>
+                                                                <Button
+                                                                    size="small"
+                                                                    color="error"
+                                                                    disabled={isGuest}
+                                                                    onClick={() => {
+                                                                        const targetStatus = activeStatuses[0]?.id
+                                                                        if (colTasks.length && targetStatus && window.confirm('Переместить задачи в первую колонку и удалить эту?')) {
+                                                                            Promise.all(colTasks.map((t) => updateTask(token, t.id, { status_id: targetStatus }))).then(loadTasks)
+                                                                            return
+                                                                        }
+                                                                        if (!colTasks.length) {
+                                                                            loadTasks()
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    Удалить
+                                                                </Button>
+                                                            </Stack>
+                                                        </Stack>
+                                                        {colTasks.map((t, idx) => (
+                                                            <Draggable key={t.id} draggableId={String(t.id)} index={idx} isDragDisabled={isGuest}>
+                                                                {(dragProps) => (
+                                                                    <Card
+                                                                        ref={dragProps.innerRef}
+                                                                        {...dragProps.draggableProps}
+                                                                        {...dragProps.dragHandleProps}
+                                                                        variant="outlined"
+                                                                        sx={{ mb: 1, borderLeft: '4px solid', borderLeftColor: deadlineColor(t) }}
+                                                                        onClick={() => openModal(t.id)}
+                                                                    >
+                                                                        <CardContent sx={{ p: 1.25 }}>
+                                                                            <Typography variant="body2" fontWeight={700}>
+                                                                                {t.title}
+                                                                            </Typography>
+                                                                            <Typography variant="caption" color="text.secondary">
+                                                                                {t.description || 'Нет описания'}
+                                                                            </Typography>
+                                                                        </CardContent>
+                                                                    </Card>
+                                                                )}
+                                                            </Draggable>
+                                                        ))}
+                                                        {provided.placeholder}
+                                                        {!colTasks.length ? (
+                                                            <Typography color="text.secondary" variant="caption">
+                                                                Нет задач
+                                                            </Typography>
+                                                        ) : null}
+                                                    </Box>
+                                                )}
+                                            </Droppable>
+                                        )
+                                    })
+                                    .filter(Boolean)}
+                            </Stack>
+                        </Stack>
+                    ) : null}
+
+                    {trashTasks.length ? (
+                        <Stack spacing={1}>
+                            <Stack direction="row" alignItems="center" spacing={2}>
+                                <Typography variant="subtitle2" color="text.secondary">
+                                    Удаленные задачи
                                 </Typography>
-                                <Box
-                                    sx={{
-                                        p: 1,
-                                        borderRadius: 1,
-                                        bgcolor: 'background.paper',
-                                        minHeight: 120,
-                                        border: '1px solid',
-                                        borderColor: 'divider',
+                                <Button
+                                    size="small"
+                                    color="error"
+                                    disabled={isGuest}
+                                    onClick={async () => {
+                                        try {
+                                            await Promise.all(trashTasks.map((t) => deleteTask(token, t.id)))
+                                            syncTrash([])
+                                            setNotif('Корзина очищена')
+                                        } catch (e) {
+                                            setError(e.message)
+                                        }
                                     }}
                                 >
-                                    {colTasks.map((t) => (
-                                        <Card
-                                            key={t.id}
-                                            variant="outlined"
-                                            sx={{
-                                                mb: 1,
-                                                borderLeft: `4px solid`,
-                                                borderLeftColor: deadlineColor(t),
-                                            }}
-                                            onClick={() => openModal(t.id)}
-                                        >
-                                            <CardContent sx={{ p: 1.25 }}>
-                                                <Typography variant="body2" fontWeight={700}>
-                                                    {t.title}
-                                                </Typography>
-                                                {t.parent_id ? (
-                                                    <Button
-                                                        component={RouterLink}
-                                                        to={`/tasks/${t.parent_id}`}
-                                                        size="small"
-                                                        variant="text"
+                                    Очистить
+                                </Button>
+                            </Stack>
+                            <Droppable droppableId="trash" type="task">
+                                {(provided) => (
+                                    <Box
+                                        ref={provided.innerRef}
+                                        {...provided.droppableProps}
+                                        sx={{
+                                            width: 320,
+        										flexShrink: 0,
+                                            p: 1,
+                                            borderRadius: 1,
+                                            border: '1px dashed',
+                                            borderColor: 'divider',
+                                            bgcolor: 'background.paper',
+                                        }}
+                                    >
+                                        {trashTasks.map((t, idx) => (
+                                            <Draggable
+                                                key={t.id}
+                                                draggableId={String(t.id)}
+                                                index={idx}
+                                                isDragDisabled={isGuest}
+                                            >
+                                                {(dragProps) => (
+                                                    <Card
+                                                        ref={dragProps.innerRef}
+                                                        {...dragProps.draggableProps}
+                                                        {...dragProps.dragHandleProps}
+                                                        variant="outlined"
+                                                        sx={{
+                                                            mb: 1,
+                                                            borderLeft: '4px solid',
+                                                            borderLeftColor: deadlineColor(t),
+                                                        }}
+                                                        onClick={() => openModal(t.id)}
                                                     >
-                                                        Родительская задача
-                                                    </Button>
-                                                ) : null}
-                                                <Typography variant="caption" color="text.secondary">
-                                                    {t.description || 'Нет описания'}
-                                                </Typography>
-                                            </CardContent>
-                                        </Card>
-                                    ))}
-                                    {!colTasks.length ? (
-                                        <Typography color="text.secondary" variant="caption">
-                                            Нет задач
-                                        </Typography>
-                                    ) : null}
-                                </Box>
-                            </Box>
-                        )
-                    })}
+                                                        <CardContent sx={{ p: 1.25 }}>
+                                                            <Typography variant="body2" fontWeight={700}>
+                                                                {t.title}
+                                                            </Typography>
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                {t.description || 'Нет описания'}
+                                                            </Typography>
+                                                        </CardContent>
+                                                    </Card>
+                                                )}
+                                            </Draggable>
+                                        ))}
+                                        {provided.placeholder}
+                                        {!trashTasks.length ? (
+                                            <Typography color="text.secondary" variant="caption">
+                                                Нет задач
+                                            </Typography>
+                                        ) : null}
+                                    </Box>
+                                )}
+                            </Droppable>
+                        </Stack>
+                    ) : null}
                 </Stack>
-            ) : null}
+            </DragDropContext>
 
             <Snackbar
                 open={Boolean(notif)}
@@ -1028,14 +1110,20 @@ export default function BoardPage() {
                 </Alert>
             </Snackbar>
 
-            <Dialog open={modalOpen} fullWidth maxWidth="md" onClose={() => setModalOpen(false)}>
+            <Dialog
+                open={modalOpen}
+                fullWidth
+                maxWidth="md"
+                onClose={() => setModalOpen(false)}
+                PaperProps={{ sx: { maxHeight: '90vh' } }}
+            >
                 {modalTask ? (
                     <>
                         <DialogTitle>{modalTask.task.title}</DialogTitle>
-                        <DialogContent dividers>
+                        <DialogContent dividers sx={{ overflowX: 'hidden' }}>
                             <Stack spacing={2}>
                                 <TextField
-                                    label="Заголовок"
+                                    label="Название"
                                     fullWidth
                                     value={modalTask.task.title}
                                     onChange={(e) =>
@@ -1221,20 +1309,20 @@ export default function BoardPage() {
                                         disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
                                     />
                                     <TextField
-        select
-        label="Единицы оценки"
-        size="small"
-        value={modalEstimateUnit}
-        onChange={(e) => setModalEstimateUnit(e.target.value)}
-        sx={{ minWidth: 160 }}
-        disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
-    >
-        {timeUnits.map((u) => (
-            <MenuItem key={u.key} value={u.key}>
-                {u.label}
-            </MenuItem>
-        ))}
-    </TextField>
+                                        select
+                                        label="Единицы оценки"
+                                        size="small"
+                                        value={modalEstimateUnit}
+                                        onChange={(e) => setModalEstimateUnit(e.target.value)}
+                                        sx={{ minWidth: 160 }}
+                                        disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
+                                    >
+                                        {timeUnits.map((u) => (
+                                            <MenuItem key={u.key} value={u.key}>
+                                                {u.label}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
                                 </Stack>
                                 <Stack spacing={1}>
                                     <Typography variant="subtitle2">Дочерние задачи</Typography>
@@ -1324,7 +1412,7 @@ export default function BoardPage() {
                                                                             )
                                                                         }
                                                                     >
-                                                                        Редактировать
+                                                                        Править
                                                                     </Button>
                                                                     <Button
                                                                         size="small"
@@ -1361,7 +1449,7 @@ export default function BoardPage() {
                                         ))}
                                     {!modalTask.comments?.length ? (
                                         <Typography variant="caption" color="text.secondary">
-                                            Комментариев нет
+                                            Нет комментариев
                                         </Typography>
                                     ) : (
                                         <Pagination
@@ -1446,9 +1534,10 @@ export default function BoardPage() {
                             <Button
                                 variant="contained"
                                 disabled={
-                                    !isAdmin &&
-                                    modalTask.task.assignee_id &&
-                                    modalTask.task.assignee_id !== user?.id
+                                    isGuest ||
+                                    (!isAdmin &&
+                                        modalTask.task.assignee_id &&
+                                        modalTask.task.assignee_id !== user?.id)
                                 }
                                 onClick={() =>
                                     saveModal({
@@ -1484,12 +1573,15 @@ export default function BoardPage() {
                 fullWidth
                 maxWidth="md"
                 onClose={() => setTaskModalOpen(false)}
+                PaperProps={{ sx: { maxHeight: '90vh' } }}
             >
-                <DialogTitle>{editingId ? 'Редактировать задачу' : 'Создать задачу'}</DialogTitle>
-                <DialogContent dividers>
+                <DialogTitle>
+                    {editingId ? 'Редактировать задачу' : 'Создать задачу'}
+                </DialogTitle>
+                <DialogContent dividers sx={{ overflowX: 'hidden' }}>
                     <Stack spacing={2}>
                         <TextField
-                            label="Заголовок"
+                            label="Название"
                             value={form.title}
                             onChange={(e) =>
                                 setForm((prev) => ({ ...prev, title: e.target.value }))
@@ -1506,9 +1598,9 @@ export default function BoardPage() {
                             fullWidth
                         />
                         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-                        <TextField
-                            select
-                            label="Статус"
+                            <TextField
+                                select
+                                label="Статус"
                             value={form.status_id}
                             onChange={(e) =>
                                 setForm((prev) => ({
@@ -1626,6 +1718,8 @@ export default function BoardPage() {
                                 sx={{ minWidth: 160 }}
                                 InputLabelProps={{ shrink: true }}
                             />
+                        </Stack>
+                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
                             <TextField
                                 label="Затраченное время"
                                 type="number"
@@ -1698,11 +1792,13 @@ export default function BoardPage() {
                     </Stack>
                 </DialogContent>
                 <DialogActions>
-                <Button onClick={() => setTaskModalOpen(false)}>Отменить</Button>
+                <Button onClick={() => setTaskModalOpen(false)}>Отмена</Button>
                 <Button
                     variant="contained"
                     onClick={handleSubmit}
-                    disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
+                    disabled={
+                        isGuest || (!isAdmin && editingId && form.assignee_id !== user?.id)
+                    }
                 >
                     {editingId ? 'Сохранить' : 'Создать'}
                 </Button>
@@ -1711,5 +1807,19 @@ export default function BoardPage() {
         </Container>
     )
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

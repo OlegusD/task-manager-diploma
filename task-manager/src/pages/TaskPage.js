@@ -1,5 +1,6 @@
-﻿import React, { useEffect, useState } from 'react'
-import { useParams, Link as RouterLink } from 'react-router-dom'
+/* eslint-disable react-hooks/exhaustive-deps */
+import React, { useEffect, useState } from 'react'
+import { useParams, Link as RouterLink, useNavigate } from 'react-router-dom'
 import {
     Container,
     Typography,
@@ -72,7 +73,9 @@ function spentColor(spent, estimated) {
 
 export default function TaskPage() {
     const { taskId } = useParams()
+    const navigate = useNavigate()
     const { token, user } = useAuth()
+    const isGuest = user?.role === 'гость'
     const [task, setTask] = useState(null)
     const [comments, setComments] = useState([])
     const [history, setHistory] = useState([])
@@ -101,6 +104,7 @@ export default function TaskPage() {
     })
     const [error, setError] = useState('')
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!token) return
         loadTask()
@@ -148,6 +152,7 @@ export default function TaskPage() {
     }
 
     async function saveTask() {
+        if (isGuest) return
         try {
             await updateTask(token, taskId, {
                 title: form.title,
@@ -218,11 +223,21 @@ export default function TaskPage() {
         )
     }
 
+    const statusLabel =
+        task.status_name ||
+        statuses.find((s) => s.id === task.status_id)?.name ||
+        'Статус неизвестен'
+
     return (
         <Container sx={{ py: 4 }}>
-            <Typography variant="h5" sx={{ mb: 2 }} fontWeight={800}>
-                {task.title}
-            </Typography>
+            <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
+                <Button variant="outlined" onClick={() => navigate(-1)}>
+                    Назад
+                </Button>
+                <Typography variant="h5" fontWeight={800}>
+                    {task.title}
+                </Typography>
+            </Stack>
             {task.parent_id ? (
                 <Typography variant="body2" sx={{ mb: 1 }}>
                     Родительская задача:{' '}
@@ -239,7 +254,7 @@ export default function TaskPage() {
             <Paper sx={{ p: 2 }}>
                 <Stack spacing={2}>
                     <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
-                        <Chip label={`Статус: ${task.status_name}`} size="small" />
+                        <Chip label={`Статус: ${statusLabel}`} size="small" />
                         <Chip label={`Приоритет: ${task.priority_name}`} size="small" />
                         <Chip label={`Тип: ${task.type_name || '-'}`} size="small" />
                         {task.assignee_name ? (
@@ -273,6 +288,7 @@ export default function TaskPage() {
                                 value={form.title}
                                 onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
                                 fullWidth
+                                disabled={isGuest}
                             />
                             <TextField
                                 label="Описание"
@@ -283,6 +299,7 @@ export default function TaskPage() {
                                 fullWidth
                                 multiline
                                 minRows={3}
+                                disabled={isGuest}
                             />
                             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                                 <TextField
@@ -294,6 +311,7 @@ export default function TaskPage() {
                                     }
                                     sx={{ minWidth: 160 }}
                                     size="small"
+                                    disabled={isGuest}
                                 >
                                     {statuses.map((s) => (
                                         <MenuItem key={s.id} value={s.id}>
@@ -310,6 +328,7 @@ export default function TaskPage() {
                                     }
                                     sx={{ minWidth: 140 }}
                                     size="small"
+                                    disabled={isGuest}
                                 >
                                     {priorities.map((p) => (
                                         <MenuItem key={p.id} value={p.id}>
@@ -326,6 +345,7 @@ export default function TaskPage() {
                                     }
                                     sx={{ minWidth: 140 }}
                                     size="small"
+                                    disabled={isGuest}
                                 >
                                     <MenuItem value="">-</MenuItem>
                                     {types.map((t) => (
@@ -343,6 +363,7 @@ export default function TaskPage() {
                                     }
                                     sx={{ minWidth: 200 }}
                                     size="small"
+                                    disabled={isGuest}
                                 >
                                     <MenuItem value="">Не выбрано</MenuItem>
                                     {users.map((u) => (
@@ -361,7 +382,9 @@ export default function TaskPage() {
                                     sx={{ minWidth: 160 }}
                                     size="small"
                                     InputProps={{ inputProps: { min: 0, step: 1 } }}
-                                    disabled={!(user?.role === 'admin' || user?.id === task.assignee_id)}
+                                    disabled={
+                                        isGuest || !(user?.role === 'admin' || user?.id === task.assignee_id)
+                                    }
                                 />
                                 <TextField
                                     select
@@ -372,7 +395,9 @@ export default function TaskPage() {
                                     }
                                     sx={{ minWidth: 160 }}
                                     size="small"
-                                    disabled={!(user?.role === 'admin' || user?.id === task.assignee_id)}
+                                    disabled={
+                                        isGuest || !(user?.role === 'admin' || user?.id === task.assignee_id)
+                                    }
                                 >
                                     {timeUnits.map((u) => (
                                         <MenuItem key={u.key} value={u.key}>
@@ -390,7 +415,9 @@ export default function TaskPage() {
                                     sx={{ minWidth: 160 }}
                                     size="small"
                                     InputProps={{ inputProps: { min: 0, step: 1 } }}
-                                    disabled={!(user?.role === 'admin' || user?.id === task.author_id)}
+                                    disabled={
+                                        isGuest || !(user?.role === 'admin' || user?.id === task.author_id)
+                                    }
                                 />
                                 <TextField
                                     select
@@ -401,7 +428,9 @@ export default function TaskPage() {
                                     }
                                     sx={{ minWidth: 160 }}
                                     size="small"
-                                    disabled={!(user?.role === 'admin' || user?.id === task.author_id)}
+                                    disabled={
+                                        isGuest || !(user?.role === 'admin' || user?.id === task.author_id)
+                                    }
                                 >
                                     {timeUnits.map((u) => (
                                         <MenuItem key={u.key} value={u.key}>
@@ -410,7 +439,12 @@ export default function TaskPage() {
                                     ))}
                                 </TextField>
                             </Stack>
-                            <Button variant="contained" onClick={saveTask} sx={{ alignSelf: 'flex-start' }}>
+                            <Button
+                                variant="contained"
+                                onClick={saveTask}
+                                sx={{ alignSelf: 'flex-start' }}
+                                disabled={isGuest}
+                            >
                                 Сохранить изменения
                             </Button>
                         </Stack>
@@ -461,7 +495,7 @@ export default function TaskPage() {
                                     <Typography variant="caption" color="text.secondary">
                                         {c.author_name} · {new Date(c.created_at).toLocaleString()}
                                     </Typography>
-                                    {(user?.role === 'admin' || c.author_id === user?.id) && (
+                                    {isGuest ? null : (user?.role === 'admin' || c.author_id === user?.id) && (
                                         <Stack direction="row" spacing={1}>
                                             {commentEditId === c.id ? (
                                                 <>
@@ -546,7 +580,7 @@ export default function TaskPage() {
                         {paginatedHistory.map((h) => (
                             <Paper key={h.id} variant="outlined" sx={{ p: 1.5 }}>
                                 <Typography variant="caption" color="text.secondary">
-                                    {h.action} � {new Date(h.created_at).toLocaleString()} � {h.author_name || 'system'}
+                                    {h.action} · {new Date(h.created_at).toLocaleString()} · {h.author_name || 'system'}
                                 </Typography>
                                 {h.new_value ? (
                                     <Typography variant="body2">
@@ -575,6 +609,7 @@ export default function TaskPage() {
         </Container>
     )
 }
+
 
 
 

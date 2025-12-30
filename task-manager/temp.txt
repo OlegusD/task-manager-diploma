@@ -1,0 +1,200 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import {
+    Box,
+    Container,
+    Typography,
+    Stack,
+    Card,
+    CardContent,
+    Chip,
+    Button,
+    TextField,
+    MenuItem,
+    Snackbar,
+    Alert,
+    Divider,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogActions,
+    Pagination,
+} from '@mui/material'
+import { useParams, Link as RouterLink } from 'react-router-dom'
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd'
+import { io } from 'socket.io-client'
+import {
+    listTasks,
+    listStatuses,
+    listPriorities,
+    listTaskTypes,
+    listUsers,
+    createTask,
+    updateTask,
+    deleteTask,
+    API_URL,
+    getTask,
+    createStatus,
+    updateStatus,
+    deleteStatus,
+    addComment,
+    updateComment,
+    deleteCommentApi,
+} from '../api'
+import { useAuth } from '../AuthContext'
+
+function deadlineColor(task) {
+    const now = Date.now()
+    const start = task.start_date ? new Date(task.start_date).getTime() : now
+    const due = task.due_date ? new Date(task.due_date).getTime() : now
+    const total = Math.max(due - start, 1)
+    const left = Math.max(due - now, 0)
+    const ratio = left / total
+    if (ratio >= 0.6) return 'success.light'
+    if (ratio >= 0.2) return 'warning.light'
+    return 'error.light'
+}
+
+function shiftToInputDate(val) {
+    if (!val) return ''
+    const d = new Date(val)
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+    return d.toISOString().slice(0, 10)
+}
+
+function toApiDate(val) {
+    return val ? `${val}T12:00:00Z` : null
+}
+
+function formatDate(val) {
+    if (!val) return '-'
+    return shiftToInputDate(val)
+}
+
+const timeUnits = [
+    { key: 'minutes', label: 'Р СР С‘Р Р…РЎС“РЎвЂљ', factor: 1 },
+    { key: 'hours', label: 'РЎвЂЎР В°РЎРѓР С•Р Р†', factor: 60 },
+    { key: 'days', label: 'Р Т‘Р Р…Р ВµР в„–', factor: 60 * 24 },
+    { key: 'months', label: 'Р СР ВµРЎРѓРЎРЏРЎвЂ Р ВµР Р†', factor: 60 * 24 * 30 },
+    { key: 'years', label: 'Р В»Р ВµРЎвЂљ', factor: 60 * 24 * 365 },
+]
+
+function toMinutes(value, unitKey) {
+    const unit = timeUnits.find((u) => u.key === unitKey) || timeUnits[0]
+    const val = Number(value) || 0
+    return Math.max(0, Math.round(val * unit.factor))
+}
+
+function fromMinutes(minutes = 0) {
+    const mins = Number(minutes) || 0
+    if (!mins) return { value: 0, unit: 'minutes' }
+    const ordered = [...timeUnits].sort((a, b) => b.factor - a.factor)
+    for (const u of ordered) {
+        if (mins % u.factor === 0 && mins / u.factor >= 1) {
+            return { value: mins / u.factor, unit: u.key }
+        }
+    }
+    return { value: mins, unit: 'minutes' }
+}
+
+function formatSpent(minutes = 0) {
+    const { value, unit } = fromMinutes(minutes)
+    const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'Р СР С‘Р Р…РЎС“РЎвЂљ'
+    return `${value} ${unitLabel}`
+}
+
+function spentColor(spent, estimated) {
+    const est = Number(estimated) || 0
+    const sp = Number(spent) || 0
+    if (!est) return 'default'
+    const ratio = sp / est
+    if (ratio <= 1) return 'success'
+    if (ratio <= 1.2) return 'warning'
+    return 'error'
+}
+
+export default function BoardPage() {
+    const { projectId } = useParams()
+    const { token, user } = useAuth()
+    const isAdmin = user?.role === 'admin'
+    const isGuest = user?.role === 'Р С–Р С•РЎРѓРЎвЂљРЎРЉ'
+    const [statuses, setStatuses] = useState([])
+    const [priorities, setPriorities] = useState([])
+    const [types, setTypes] = useState([])
+    const [users, setUsers] = useState([])
+    const [tasks, setTasks] = useState([])
+    const [error, setError] = useState('')
+    const [notif, setNotif] = useState('')
+    const [editingId, setEditingId] = useState(null)
+    const [columnDraft, setColumnDraft] = useState('')
+    const [filters, setFilters] = useState({
+        q: '',
+        assignee_id: '',
+        priority_id: '',
+        sort: '',
+    })
+    const [modalOpen, setModalOpen] = useState(false)
+    const [modalTask, setModalTask] = useState(null)
+    const [taskModalOpen, setTaskModalOpen] = useState(false)
+    const [modalComment, setModalComment] = useState('')
+    const [modalCommentsPage, setModalCommentsPage] = useState(1)
+    const [modalHistoryPage, setModalHistoryPage] = useState(1)
+    const [modalEditCommentId, setModalEditCommentId] = useState(null)
+    const [modalEditCommentBody, setModalEditCommentBody] = useState('')
+    const [modalSpentValue, setModalSpentValue] = useState(0)
+    const [modalSpentUnit, setModalSpentUnit] = useState('minutes')
+    const [modalEstimateValue, setModalEstimateValue] = useState(0)
+    const [modalEstimateUnit, setModalEstimateUnit] = useState('minutes')
+    const [trashTasks, setTrashTasks] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem('trashTasks') || '[]')
+        } catch {
+            return []
+        }
+    })
+    const [deletedStatusIds, setDeletedStatusIds] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem('deletedStatuses') || '[]')
+        } catch {
+            return []
+        }
+    })
+    const pageSize = 5
+    const [form, setForm] = useState({
+        title: '',
+        description: '',
+        status_id: '',
+        priority_id: '',
+        type_id: '',
+        assignee_id: '',
+        parent_id: '',
+        start_date: '',
+        due_date: '',
+        spent_value: 0,
+        spent_unit: 'minutes',
+        estimated_value: 0,
+        estimated_unit: 'minutes',
+        author_id: '',
+    })
+
+    useEffect(() => {
+        if (!token) return
+        loadRefs()
+        loadTasks()
+    }, [token, projectId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        const socket = io(API_URL, { transports: ['websocket'] })
+        socket.on('task_status_changed', (payload) => {
+            setNotif(`Р РЋРЎвЂљР В°РЎвЂљРЎС“РЎРѓ Р В·Р В°Р Т‘Р В°РЎвЂЎР С‘ ${payload.taskId} Р С‘Р В·Р СР ВµР Р…Р ВµР Р…`)
+            loadTasks()
+        })
+        return () => socket.disconnect()
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+    async function loadRefs() {
+        try {
+            const [sts, prs, tts, us] = await Promise.all([
+                listStatuses(token, { project_id: projectId }),
+                listPriorities(token),
+                listTaskTypes(token),
+                listUsers(token),

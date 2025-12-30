@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { Avatar, Button, TextField, Grid, Box, Typography, Container, Link, Alert } from '@mui/material'
 import PersonAddAltOutlinedIcon from '@mui/icons-material/PersonAddAltOutlined'
 import { useNavigate, Link as RouterLink } from 'react-router-dom'
@@ -101,4 +101,5 @@ export default function SignupPage() {
         </Container>
     )
 }
+
 

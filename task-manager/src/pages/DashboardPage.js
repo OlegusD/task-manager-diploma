@@ -1,4 +1,5 @@
-﻿import React, { useEffect, useState } from 'react'
+/* eslint-disable react-hooks/exhaustive-deps */
+import React, { useEffect, useState } from 'react'
 import {
     Container,
     Typography,
@@ -30,6 +31,7 @@ export default function DashboardPage() {
     const [error, setError] = useState('')
     const [projectModal, setProjectModal] = useState(false)
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!token) return
         loadData()
@@ -47,11 +49,11 @@ export default function DashboardPage() {
 
     async function handleCreateProject(e) {
         e?.preventDefault()
-        if (!newProject.name.trim()) return setError('Введите название проекта')
+        if (!newProject.name.trim()) return setError('������� �������� �������')
         try {
             await createProject(token, newProject)
             setNewProject({ name: '', description: '', member_ids: [] })
-            setMessage('Проект создан')
+            setMessage('������ ������')
             setProjectModal(false)
             loadData()
         } catch (e) {
@@ -62,7 +64,7 @@ export default function DashboardPage() {
     return (
         <Container sx={{ py: 6 }}>
             <Typography variant="h4" gutterBottom fontWeight={800}>
-                Рабочая панель
+                ������� ������
             </Typography>
             {message ? (
                 <Alert severity="success" sx={{ mb: 2 }} onClose={() => setMessage('')}>
@@ -78,7 +80,7 @@ export default function DashboardPage() {
             <Grid container spacing={3} alignItems="flex-start">
                 <Grid item xs={12} md={7}>
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
-                        <Typography variant="h6">Проекты</Typography>
+                        <Typography variant="h6">�������</Typography>
                         {user?.role === 'admin' ? (
                             <Button
                                 size="small"
@@ -86,7 +88,7 @@ export default function DashboardPage() {
                                 onClick={() => setProjectModal(true)}
                                 sx={{ px: 1.75, py: 0.6, fontSize: 14 }}
                             >
-                                Создать проект
+                                ������� ������
                             </Button>
                         ) : null}
                     </Stack>
@@ -98,10 +100,10 @@ export default function DashboardPage() {
                                         {p.name}
                                     </Typography>
                                     <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                                        {p.description || 'Без описания'}
+                                        {p.description || '��� ��������'}
                                     </Typography>
                                     <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                                        <Chip size="small" label={`Участников: ${p.members_count ?? 0}`} />
+                                        <Chip size="small" label={`����������: ${p.members_count ?? 0}`} />
                                     </Stack>
                                     <Stack direction="row" spacing={1}>
                                         <Button
@@ -110,7 +112,7 @@ export default function DashboardPage() {
                                             variant="contained"
                                             size="small"
                                         >
-                                            Доска
+                                            �����
                                         </Button>
                                         <Button
                                             component={RouterLink}
@@ -118,21 +120,21 @@ export default function DashboardPage() {
                                             variant="outlined"
                                             size="small"
                                         >
-                                            Список
+                                            ������
                                         </Button>
                                     </Stack>
                                 </CardContent>
                             </Card>
                         ))}
                         {!projects.length ? (
-                            <Typography color="text.secondary">Проектов пока нет</Typography>
+                            <Typography color="text.secondary">�������� ���� ���</Typography>
                         ) : null}
                     </Stack>
                 </Grid>
 
                 <Grid item xs={12} md={5}>
                     <Typography variant="subtitle1" fontWeight={700}>
-                        Сотрудники
+                        ����������
                     </Typography>
                     <Stack spacing={1} sx={{ mt: 1 }}>
                         {people.map((p) => (
@@ -144,7 +146,7 @@ export default function DashboardPage() {
                                                 {p.name}
                                             </Typography>
                                             <Typography variant="caption" color="text.secondary">
-                                                {p.email} · {p.role}
+                                                {p.email} � {p.role}
                                             </Typography>
                                         </Box>
                                     </Stack>
@@ -152,7 +154,7 @@ export default function DashboardPage() {
                             </Card>
                         ))}
                         {!people.length ? (
-                            <Typography color="text.secondary">Сотрудников нет</Typography>
+                            <Typography color="text.secondary">����������� ���</Typography>
                         ) : null}
                     </Stack>
 
@@ -163,23 +165,23 @@ export default function DashboardPage() {
                         fullWidth
                         sx={{ mt: 2 }}
                     >
-                        Управление сотрудниками
+                        ���������� ������������
                     </Button>
                 </Grid>
             </Grid>
 
             <Dialog open={projectModal} fullWidth maxWidth="sm" onClose={() => setProjectModal(false)}>
-                <DialogTitle>Создать проект</DialogTitle>
+                <DialogTitle>������� ������</DialogTitle>
                 <DialogContent dividers>
                     <Stack spacing={2}>
                         <TextField
-                            label="Название"
+                            label="��������"
                             value={newProject.name}
                             onChange={(e) => setNewProject((prev) => ({ ...prev, name: e.target.value }))}
                             fullWidth
                         />
                         <TextField
-                            label="Описание"
+                            label="��������"
                             value={newProject.description}
                             onChange={(e) => setNewProject((prev) => ({ ...prev, description: e.target.value }))}
                             fullWidth
@@ -188,7 +190,7 @@ export default function DashboardPage() {
                         />
                         <TextField
                             select
-                            label="Участники"
+                            label="���������"
                             SelectProps={{ multiple: true }}
                             value={newProject.member_ids}
                             onChange={(e) =>
@@ -209,12 +211,16 @@ export default function DashboardPage() {
                     </Stack>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setProjectModal(false)}>Отмена</Button>
+                    <Button onClick={() => setProjectModal(false)}>������</Button>
                     <Button variant="contained" onClick={handleCreateProject}>
-                        Создать
+                        �������
                     </Button>
                 </DialogActions>
             </Dialog>
         </Container>
     )
 }
+
+
+
+

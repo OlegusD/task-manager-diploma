@@ -1,4 +1,4 @@
-﻿import React from 'react'
+import React from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Link as RouterLink } from 'react-router-dom'
 import { AppBar, Toolbar, Typography, Button, Box, Stack } from '@mui/material'
 import { AuthProvider, useAuth } from './AuthContext'
@@ -116,3 +116,4 @@ export default function App() {
         </AuthProvider>
     )
 }
+
