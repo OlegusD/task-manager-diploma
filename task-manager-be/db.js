@@ -100,6 +100,8 @@ async function init() {
         parent_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
         start_date TIMESTAMP NOT NULL DEFAULT NOW(),
         due_date TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+        spent_minutes INTEGER NOT NULL DEFAULT 0,
+        estimated_minutes INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
@@ -125,9 +127,18 @@ async function init() {
         ADD COLUMN IF NOT EXISTS start_date TIMESTAMP NOT NULL DEFAULT NOW();
     `)
 
-        await client.query(`
+    await client.query(`
       ALTER TABLE tasks
         ADD COLUMN IF NOT EXISTS due_date TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '7 days');
+    `)
+
+        await client.query(`
+      ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS spent_minutes INTEGER NOT NULL DEFAULT 0;
+    `)
+        await client.query(`
+      ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS estimated_minutes INTEGER NOT NULL DEFAULT 0;
     `)
 
         await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);`)
@@ -197,7 +208,7 @@ async function init() {
       UPDATE roles SET name = 'разработчик' WHERE name = 'user';
       UPDATE roles SET is_admin = TRUE WHERE name = 'admin';
       INSERT INTO roles (name, is_admin) VALUES
-        ('admin', TRUE), ('разработчик', FALSE)
+        ('admin', TRUE), ('разработчик', FALSE), ('гость', FALSE)
       ON CONFLICT (name) DO NOTHING;
     `)
 

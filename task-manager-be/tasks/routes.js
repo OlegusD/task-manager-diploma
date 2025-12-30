@@ -77,6 +77,8 @@ router.post('/', async (req, res) => {
         type_id,
         start_date,
         due_date,
+        spent_minutes = 0,
+        estimated_minutes = 0,
     } = req.body || {}
     if (!title || !status_id || !priority_id)
         return res.status(400).json({ error: 'Missing fields' })
@@ -86,8 +88,8 @@ router.post('/', async (req, res) => {
 
     const id = uuidv4()
     await query(
-        `INSERT INTO tasks (id, title, description, status_id, priority_id, author_id, parent_id, assignee_id, project_id, type_id, start_date, due_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        `INSERT INTO tasks (id, title, description, status_id, priority_id, author_id, parent_id, assignee_id, project_id, type_id, start_date, due_date, spent_minutes, estimated_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
             id,
             title,
@@ -101,6 +103,8 @@ router.post('/', async (req, res) => {
             type_id ?? null,
             start_date ? new Date(start_date) : new Date(),
             due_date ? new Date(due_date) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            spent_minutes ?? 0,
+            estimated_minutes ?? 0,
         ]
     )
 
@@ -174,7 +178,7 @@ router.get('/:id', async (req, res) => {
 router.patch('/:id', async (req, res) => {
     const { id } = req.params
     const { rows: owner } = await query(
-        'SELECT author_id, status_id, priority_id, title, description, parent_id, assignee_id, project_id, type_id, start_date, due_date FROM tasks WHERE id=$1',
+        'SELECT author_id, status_id, priority_id, title, description, parent_id, assignee_id, project_id, type_id, start_date, due_date, spent_minutes, estimated_minutes FROM tasks WHERE id=$1',
         [id]
     )
     if (!owner.length) return res.status(404).json({ error: 'Not found' })
@@ -194,12 +198,21 @@ router.patch('/:id', async (req, res) => {
         type_id: 'type_id',
         start_date: 'start_date',
         due_date: 'due_date',
+        spent_minutes: 'spent_minutes',
+        estimated_minutes: 'estimated_minutes',
     }
 
     const sets = []
     const params = []
     Object.keys(fieldsMap).forEach((k) => {
         if (req.body[k] !== undefined) {
+            // estimated_minutes можно править только автору или админу
+            if (
+                k === 'estimated_minutes' &&
+                !(req.user.role === 'admin' || task.author_id === req.user.id)
+            ) {
+                return
+            }
             params.push(req.body[k])
             sets.push(`${fieldsMap[k]} = $${params.length}`)
         }

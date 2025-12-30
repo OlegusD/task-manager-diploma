@@ -11,12 +11,21 @@ export default function SignupPage() {
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
     const [submitting, setSubmitting] = useState(false)
+    const formErrors = {
+        name: !name.trim(),
+        email: !email.includes('@'),
+        password: password.length < 6,
+    }
 
     const handleSignup = async (e) => {
         e.preventDefault()
+        if (formErrors.name || formErrors.email || formErrors.password) {
+            setError('Заполните корректно имя, email и пароль (мин 6 символов)')
+            return
+        }
         setSubmitting(true)
         try {
-            await signup({ email, password, name })
+            await signup({ email, password, name, role: 'гость' })
             navigate('/')
         } catch (err) {
             setError(err.message)
@@ -47,6 +56,8 @@ export default function SignupPage() {
                         label="Имя"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
+                        error={formErrors.name}
+                        helperText={formErrors.name ? 'Имя обязательно' : ''}
                     />
                     <TextField
                         margin="normal"
@@ -55,6 +66,8 @@ export default function SignupPage() {
                         label="Email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
+                        error={formErrors.email}
+                        helperText={formErrors.email ? 'Введите корректный email' : ''}
                     />
                     <TextField
                         margin="normal"
@@ -64,6 +77,8 @@ export default function SignupPage() {
                         type="password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
+                        error={formErrors.password}
+                        helperText={formErrors.password ? 'Минимум 6 символов' : ''}
                     />
                     <Button
                         type="submit"
@@ -86,3 +101,4 @@ export default function SignupPage() {
         </Container>
     )
 }
+

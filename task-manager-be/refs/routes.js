@@ -7,23 +7,21 @@ router.use(requireAuth)
 
 router.get('/statuses', async (req, res) => {
     const { project_id } = req.query
-    const params = []
-    const where = []
-    if (project_id) {
-        params.push(project_id)
-        where.push('(project_id IS NULL OR project_id = $1)')
+    if (!project_id) {
+        const { rows } = await query(
+            `SELECT id, name, position, project_id FROM statuses WHERE project_id IS NULL ORDER BY position ASC`
+        )
+        return res.json(rows)
     }
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const { rows } = await query(
-        `
-        SELECT DISTINCT ON (name) id, name, position, project_id
-        FROM statuses
-        ${whereSql}
-        ORDER BY name, project_id DESC, position ASC
-    `,
-        params
+        `SELECT id, name, position, project_id FROM statuses WHERE project_id = $1 ORDER BY position ASC`,
+        [project_id]
     )
-    res.json(rows)
+    if (rows.length) return res.json(rows)
+    const { rows: fallback } = await query(
+        `SELECT id, name, position, project_id FROM statuses WHERE project_id IS NULL ORDER BY position ASC`
+    )
+    res.json(fallback)
 })
 
 router.get('/priorities', async (_req, res) => {
@@ -109,6 +107,8 @@ router.post('/statuses', async (req, res) => {
     const { name, position = 1, project_id } = req.body || {}
     if (!name) return res.status(400).json({ error: 'Missing name' })
     if (!project_id) return res.status(400).json({ error: 'Missing project_id' })
+    const pos = Number(position)
+    if (Number.isNaN(pos)) return res.status(400).json({ error: 'Bad position' })
     const { rows } = await query(
         `
       INSERT INTO statuses (name, position, project_id)
@@ -116,7 +116,7 @@ router.post('/statuses', async (req, res) => {
       ON CONFLICT (name, project_id) DO NOTHING
       RETURNING id;
     `,
-        [name, position, project_id]
+        [name, pos, project_id]
     )
     if (!rows.length) return res.status(409).json({ error: 'Status exists' })
     res.status(201).json({ id: rows[0].id })
@@ -133,7 +133,9 @@ router.patch('/statuses/:id', async (req, res) => {
         sets.push(`name = $${params.length}`)
     }
     if (position !== undefined) {
-        params.push(position)
+        const pos = Number(position)
+        if (Number.isNaN(pos)) return res.status(400).json({ error: 'Bad position' })
+        params.push(pos)
         sets.push(`position = $${params.length}`)
     }
     params.push(id)

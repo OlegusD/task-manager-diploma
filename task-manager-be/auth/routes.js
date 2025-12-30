@@ -1,4 +1,4 @@
-const { Router } = require('express')
+﻿const { Router } = require('express')
 const { query } = require('../db')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
@@ -8,14 +8,25 @@ const { requireAuth, requireRole } = require('./middleware')
 const router = Router()
 
 router.post('/register', async (req, res) => {
-    const { email, password, name } = req.body || {}
+    const { email, password, name, role = 'гость' } = req.body || {}
     if (!email || !password || !name) return res.status(400).json({ error: 'Missing fields' })
 
     const { rows: exists } = await query('SELECT id FROM users WHERE email=$1', [email])
     if (exists.length) return res.status(409).json({ error: 'Email exists' })
 
-    const { rows: role } = await query(`SELECT id FROM roles WHERE name='разработчик' LIMIT 1;`)
-    const roleId = role[0]?.id
+    let roleId
+    const { rows: roleRow } = await query(`SELECT id FROM roles WHERE name=$1 LIMIT 1;`, [role])
+    if (roleRow.length) {
+        roleId = roleRow[0].id
+    } else {
+        await query('INSERT INTO roles (name, is_admin) VALUES ($1,false) ON CONFLICT (name) DO NOTHING', [
+            role,
+        ])
+        const { rows: roleRow2 } = await query(`SELECT id FROM roles WHERE name=$1 LIMIT 1;`, [role])
+        roleId = roleRow2[0]?.id
+    }
+    if (!roleId) return res.status(400).json({ error: 'Role not available' })
+
     const hash = bcrypt.hashSync(password, 10)
     const id = uuidv4()
 
@@ -25,7 +36,7 @@ router.post('/register', async (req, res) => {
     )
 
     const token = jwt.sign(
-        { userId: id, role: 'разработчик', email },
+        { userId: id, role, email },
         process.env.JWT_SECRET || 'change_me',
         { expiresIn: '30m' }
     )
@@ -197,3 +208,4 @@ router.delete('/roles/:id', requireAuth, requireRole('admin'), async (req, res) 
 })
 
 module.exports = router
+

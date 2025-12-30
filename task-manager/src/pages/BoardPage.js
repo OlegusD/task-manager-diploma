@@ -19,7 +19,7 @@ import {
     DialogActions,
     Pagination,
 } from '@mui/material'
-import { useParams } from 'react-router-dom'
+import { useParams, Link as RouterLink } from 'react-router-dom'
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd'
 import { io } from 'socket.io-client'
 import {
@@ -70,6 +70,48 @@ function formatDate(val) {
     return shiftToInputDate(val)
 }
 
+const timeUnits = [
+    { key: 'minutes', label: 'минут', factor: 1 },
+    { key: 'hours', label: 'часов', factor: 60 },
+    { key: 'days', label: 'дней', factor: 60 * 24 },
+    { key: 'months', label: 'месяцев', factor: 60 * 24 * 30 },
+    { key: 'years', label: 'лет', factor: 60 * 24 * 365 },
+]
+
+function toMinutes(value, unitKey) {
+    const unit = timeUnits.find((u) => u.key === unitKey) || timeUnits[0]
+    const val = Number(value) || 0
+    return Math.max(0, Math.round(val * unit.factor))
+}
+
+function fromMinutes(minutes = 0) {
+    const mins = Number(minutes) || 0
+    if (!mins) return { value: 0, unit: 'minutes' }
+    const ordered = [...timeUnits].sort((a, b) => b.factor - a.factor)
+    for (const u of ordered) {
+        if (mins % u.factor === 0 && mins / u.factor >= 1) {
+            return { value: mins / u.factor, unit: u.key }
+        }
+    }
+    return { value: mins, unit: 'minutes' }
+}
+
+function formatSpent(minutes = 0) {
+    const { value, unit } = fromMinutes(minutes)
+    const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'минут'
+    return `${value} ${unitLabel}`
+}
+
+function spentColor(spent, estimated) {
+    const est = Number(estimated) || 0
+    const sp = Number(spent) || 0
+    if (!est) return 'default'
+    const ratio = sp / est
+    if (ratio <= 1) return 'success'
+    if (ratio <= 1.2) return 'warning'
+    return 'error'
+}
+
 export default function BoardPage() {
     const { projectId } = useParams()
     const { token, user } = useAuth()
@@ -86,8 +128,8 @@ export default function BoardPage() {
     const [filters, setFilters] = useState({
         q: '',
         assignee_id: '',
-        status_id: '',
         priority_id: '',
+        sort: '',
     })
     const [modalOpen, setModalOpen] = useState(false)
     const [modalTask, setModalTask] = useState(null)
@@ -97,6 +139,10 @@ export default function BoardPage() {
     const [modalHistoryPage, setModalHistoryPage] = useState(1)
     const [modalEditCommentId, setModalEditCommentId] = useState(null)
     const [modalEditCommentBody, setModalEditCommentBody] = useState('')
+    const [modalSpentValue, setModalSpentValue] = useState(0)
+    const [modalSpentUnit, setModalSpentUnit] = useState('minutes')
+    const [modalEstimateValue, setModalEstimateValue] = useState(0)
+    const [modalEstimateUnit, setModalEstimateUnit] = useState('minutes')
     const pageSize = 5
     const [form, setForm] = useState({
         title: '',
@@ -108,6 +154,11 @@ export default function BoardPage() {
         parent_id: '',
         start_date: '',
         due_date: '',
+        spent_value: 0,
+        spent_unit: 'minutes',
+        estimated_value: 0,
+        estimated_unit: 'minutes',
+        author_id: '',
     })
 
     useEffect(() => {
@@ -141,11 +192,16 @@ export default function BoardPage() {
             const threeDays = shiftToInputDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000))
             setForm((prev) => ({
                 ...prev,
+                author_id: user?.id || prev.author_id,
                 status_id: (sts && sts[0]?.id) ?? '',
                 priority_id: prs[1]?.id ?? prs[0]?.id ?? '',
                 type_id: tts[0]?.id ?? '',
                 start_date: prev.start_date || today,
                 due_date: prev.due_date || threeDays,
+                spent_value: prev.spent_value ?? 0,
+                spent_unit: prev.spent_unit || 'minutes',
+                estimated_value: prev.estimated_value ?? 0,
+                estimated_unit: prev.estimated_unit || 'minutes',
             }))
         } catch (e) {
             setError(e.message)
@@ -158,7 +214,6 @@ export default function BoardPage() {
                 project_id: projectId,
                 q: filters.q,
                 assignee_id: filters.assignee_id,
-                status_id: filters.status_id,
                 priority_id: filters.priority_id,
             })
             setTasks(data)
@@ -167,15 +222,55 @@ export default function BoardPage() {
         }
     }
 
+    const priorityWeight = useMemo(() => {
+        const map = new Map()
+        priorities.forEach((p) => map.set(p.id, p.weight))
+        return map
+    }, [priorities])
+
+    const sortedTasks = useMemo(() => {
+        const comparator = {
+            status: (a, b) => (a.status_name || '').localeCompare(b.status_name || ''),
+            assignee: (a, b) => (a.assignee_name || '').localeCompare(b.assignee_name || ''),
+            priority: (a, b) => (priorityWeight.get(b.priority_id) || 0) - (priorityWeight.get(a.priority_id) || 0),
+            due: (a, b) => new Date(a.due_date || 0) - new Date(b.due_date || 0),
+            start: (a, b) => new Date(a.start_date || 0) - new Date(b.start_date || 0),
+            title: (a, b) => (a.title || '').localeCompare(b.title || ''),
+        }
+        const cmp = comparator[filters.sort]
+        if (!cmp) return tasks
+        return [...tasks].sort(cmp)
+    }, [tasks, filters.sort, priorityWeight])
+
+    const extraStatuses = useMemo(() => {
+        const known = new Set(statuses.map((s) => s.id))
+        const extras = []
+        sortedTasks.forEach((t) => {
+            if (t.status_id && !known.has(t.status_id)) {
+                known.add(t.status_id)
+                extras.push({
+                    id: t.status_id,
+                    name: t.status_name || 'Статус',
+                    position: (statuses.length + extras.length + 1) * 10,
+                    project_id: t.project_id,
+                    readonly: true,
+                })
+            }
+        })
+        return extras
+    }, [sortedTasks, statuses])
+
+    const statusOptions = useMemo(() => [...statuses, ...extraStatuses], [statuses, extraStatuses])
+
     const tasksByStatus = useMemo(() => {
         const map = new Map()
-        statuses.forEach((s) => map.set(s.id, []))
-        tasks.forEach((t) => {
+        statusOptions.forEach((s) => map.set(s.id, []))
+        sortedTasks.forEach((t) => {
             if (!map.has(t.status_id)) map.set(t.status_id, [])
             map.get(t.status_id).push(t)
         })
         return map
-    }, [tasks, statuses])
+    }, [sortedTasks, statusOptions])
 
     const parentOptions = useMemo(() => tasks.filter((t) => !t.parent_id), [tasks])
 
@@ -187,8 +282,13 @@ export default function BoardPage() {
             description: '',
             assignee_id: '',
             parent_id: '',
+            author_id: user?.id || '',
             start_date: shiftToInputDate(new Date()),
             due_date: shiftToInputDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)),
+            spent_value: 0,
+            spent_unit: 'minutes',
+            estimated_value: 0,
+            estimated_unit: 'minutes',
         }))
     }
     async function handleSubmit(e) {
@@ -196,8 +296,15 @@ export default function BoardPage() {
         if (!form.title) return
         try {
             const normalizeDate = (d) => toApiDate(d)
+            const spent = toMinutes(form.spent_value, form.spent_unit)
+            const estimated = toMinutes(form.estimated_value, form.estimated_unit)
             const payload = {
                 ...form,
+                spent_value: undefined,
+                spent_unit: undefined,
+                estimated_value: undefined,
+                estimated_unit: undefined,
+                author_id: undefined,
                 project_id: projectId,
                 assignee_id: form.assignee_id || null,
                 parent_id: form.parent_id || null,
@@ -206,6 +313,8 @@ export default function BoardPage() {
                 priority_id: form.priority_id ? Number(form.priority_id) : null,
                 start_date: normalizeDate(form.start_date),
                 due_date: normalizeDate(form.due_date),
+                spent_minutes: spent,
+                estimated_minutes: estimated,
             }
             if (editingId) {
                 await updateTask(token, editingId, payload)
@@ -244,6 +353,8 @@ export default function BoardPage() {
     function startEdit(task) {
         if (!isAdmin && task.assignee_id !== user?.id) return
         setEditingId(task.id)
+        const spent = fromMinutes(task.spent_minutes)
+        const estimated = fromMinutes(task.estimated_minutes)
         setForm({
             title: task.title,
             description: task.description || '',
@@ -254,6 +365,11 @@ export default function BoardPage() {
             parent_id: task.parent_id || '',
             start_date: shiftToInputDate(task.start_date),
             due_date: shiftToInputDate(task.due_date),
+            spent_value: spent.value,
+            spent_unit: spent.unit,
+            estimated_value: estimated.value,
+            estimated_unit: estimated.unit,
+            author_id: task.author_id,
         })
         setTaskModalOpen(true)
     }
@@ -261,6 +377,7 @@ export default function BoardPage() {
     async function handleDragEnd(result) {
         if (!result.destination) return
         if (result.type === 'column') {
+            if (!isAdmin) return
             const reordered = Array.from(statuses).sort((a, b) => a.position - b.position)
             const [removed] = reordered.splice(result.source.index, 1)
             reordered.splice(result.destination.index, 0, removed)
@@ -327,6 +444,12 @@ export default function BoardPage() {
         try {
             const data = await getTask(token, taskId)
             setModalTask(data)
+            const parsedSpent = fromMinutes(data.task.spent_minutes || 0)
+            const parsedEstimated = fromMinutes(data.task.estimated_minutes || 0)
+            setModalSpentValue(parsedSpent.value)
+            setModalSpentUnit(parsedSpent.unit)
+            setModalEstimateValue(parsedEstimated.value)
+            setModalEstimateUnit(parsedEstimated.unit)
             setModalComment('')
             setModalCommentsPage(1)
             setModalHistoryPage(1)
@@ -415,29 +538,12 @@ export default function BoardPage() {
                 <TextField
                     size="small"
                     select
-                    label="Статус"
-                    value={filters.status_id}
-                    onChange={(e) => setFilters((prev) => ({ ...prev, status_id: e.target.value }))}
-                    sx={{ minWidth: 140 }}
+                    label="Исполнитель"
+                    value={filters.assignee_id}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, assignee_id: e.target.value }))}
+                    sx={{ minWidth: 180 }}
+                    disabled={!isAdmin}
                 >
-                    <MenuItem value="">Все</MenuItem>
-                    {statuses.map((s) => (
-                        <MenuItem key={s.id} value={s.id}>
-                            {s.name}
-                        </MenuItem>
-                    ))}
-                </TextField>
-                        <TextField
-                            size="small"
-                            select
-                            label="Исполнитель"
-                            value={filters.assignee_id}
-                            onChange={(e) =>
-                                setFilters((prev) => ({ ...prev, assignee_id: e.target.value }))
-                            }
-                            sx={{ minWidth: 180 }}
-                            disabled={!isAdmin}
-                        >
                     <MenuItem value="">Все</MenuItem>
                     {users.map((u) => (
                         <MenuItem key={u.id} value={u.id}>
@@ -462,13 +568,29 @@ export default function BoardPage() {
                         </MenuItem>
                     ))}
                 </TextField>
+                <TextField
+                    size="small"
+                    select
+                    label="Сортировка"
+                    value={filters.sort}
+                    onChange={(e) => setFilters((prev) => ({ ...prev, sort: e.target.value }))}
+                    sx={{ minWidth: 160 }}
+                >
+                    <MenuItem value="">Нет</MenuItem>
+                    <MenuItem value="status">Статус</MenuItem>
+                    <MenuItem value="assignee">Исполнитель</MenuItem>
+                    <MenuItem value="priority">Приоритет</MenuItem>
+                    <MenuItem value="due">Дедлайн</MenuItem>
+                    <MenuItem value="start">Начало</MenuItem>
+                    <MenuItem value="title">Название</MenuItem>
+                </TextField>
                 <Button variant="outlined" onClick={loadTasks}>
                     Фильтровать
                 </Button>
-                        <Button variant="contained" onClick={() => setTaskModalOpen(true)}>
-                            Создать задачу
-                        </Button>
-                    </Stack>
+                <Button variant="contained" onClick={() => setTaskModalOpen(true)}>
+                    Создать задачу
+                </Button>
+            </Stack>
 
             <Stack
                 direction={{ xs: 'column', md: 'row' }}
@@ -526,6 +648,7 @@ export default function BoardPage() {
                                             draggableId={`col-${col.id}`}
                                             index={colIdx}
                                             key={col.id}
+                                            isDragDisabled={!isAdmin}
                                         >
                                             {(colDrag) => (
                                                 <Box
@@ -546,27 +669,29 @@ export default function BoardPage() {
                                                         >
                                                             {col.name}
                                                         </Typography>
-                                                        <Stack direction="row" spacing={1}>
-                                                            <Button
-                                                                size="small"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation()
-                                                                    handleRenameStatus(col.id)
-                                                                }}
-                                                            >
-                                                                Ред.
-                                                            </Button>
-                                                            <Button
-                                                                size="small"
-                                                                color="error"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation()
-                                                                    handleDeleteStatus(col.id)
-                                                                }}
-                                                            >
-                                                                Удал.
-                                                            </Button>
-                                                        </Stack>
+                                                        {isAdmin ? (
+                                                            <Stack direction="row" spacing={1}>
+                                                                <Button
+                                                                    size="small"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation()
+                                                                        handleRenameStatus(col.id)
+                                                                    }}
+                                                                >
+                                                                    Ред.
+                                                                </Button>
+                                                                <Button
+                                                                    size="small"
+                                                                    color="error"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation()
+                                                                        handleDeleteStatus(col.id)
+                                                                    }}
+                                                                >
+                                                                    Удал.
+                                                                </Button>
+                                                            </Stack>
+                                                        ) : null}
                                                     </Stack>
                                                     <Droppable
                                                         droppableId={String(col.id)}
@@ -622,6 +747,16 @@ export default function BoardPage() {
                                                                                     >
                                                                                         {t.title}
                                                                                     </Typography>
+                                                                                    {t.parent_id ? (
+                                                                                        <Button
+                                                                                            component={RouterLink}
+                                                                                            to={`/tasks/${t.parent_id}`}
+                                                                                            size="small"
+                                                                                            variant="text"
+                                                                                        >
+                                                                                            Родительская задача
+                                                                                        </Button>
+                                                                                    ) : null}
                                                                                     <Typography
                                                                                         variant="caption"
                                                                                         color="text.secondary"
@@ -651,10 +786,27 @@ export default function BoardPage() {
                                                                                         <Chip
                                                                                             label={`Тип: ${
                                                                                                 t.type_name ||
-                                                                                                '—'
+                                                                                                '-'
                                                                                             }`}
                                                                                             size="small"
                                                                                             color="info"
+                                                                                        />
+                                                                                        <Chip
+                                                                                            label={`Затрачено: ${formatSpent(
+                                                                                                t.spent_minutes || 0
+                                                                                            )}`}
+                                                                                            size="small"
+                                                                                            color={spentColor(
+                                                                                                t.spent_minutes,
+                                                                                                t.estimated_minutes
+                                                                                            )}
+                                                                                        />
+                                                                                        <Chip
+                                                                                            label={`Оценка: ${formatSpent(
+                                                                                                t.estimated_minutes || 0
+                                                                                            )}`}
+                                                                                            size="small"
+                                                                                            color="default"
                                                                                         />
                                                                                         {t.assignee_name ? (
                                                                                             <Chip
@@ -671,16 +823,16 @@ export default function BoardPage() {
                                                                                             mt: 0.5,
                                                                                             color: 'text.secondary',
                                                                                         }}
-                                                                                    >
-                                                                                        С{' '}
-                                                                                        {formatDate(
-                                                                                            t.start_date
-                                                                                        )}{' '}
-                                                                                        до{' '}
-                                                                                        {formatDate(
-                                                                                            t.due_date
-                                                                                        )}
-                                                                                    </Typography>
+                                                                                        >
+                                                                                            С{' '}
+                                                                                            {formatDate(
+                                                                                                t.start_date
+                                                                                            )}{' '}
+                                                                                            до{' '}
+                                                                                            {formatDate(
+                                                                                                t.due_date
+                                                                                            )}
+                                                                                        </Typography>
 
                                                                                     <Stack
                                                                                         direction="row"
@@ -716,7 +868,7 @@ export default function BoardPage() {
                                                                                                         minWidth: 140,
                                                                                                     }}
                                                                                                 >
-                                                                                                    {statuses.map(
+                                                                                                    {statusOptions.map(
                                                                                                         (
                                                                                                             s
                                                                                                         ) => (
@@ -747,7 +899,7 @@ export default function BoardPage() {
                                                                                                                     t
                                                                                                                 )
                                                                                                             }}
-                                                                                                        >
+                                                                                                       >
                                                                                                             Править
                                                                                                         </Button>
                                                                                                         <Button
@@ -758,10 +910,10 @@ export default function BoardPage() {
                                                                                                             ) => {
                                                                                                                 ev.stopPropagation()
                                                                                                                 handleDelete(
-                                                                                                                    t.id
-                                                                                                                )
-                                                                                                            }}
-                                                                                                        >
+                                                                                                               t.id
+                                                                                                            )
+                                                                                                        }}
+                                                                                                    >
                                                                                                             Удалить
                                                                                                         </Button>
                                                                                                     </>
@@ -797,6 +949,74 @@ export default function BoardPage() {
                 </Droppable>
             </DragDropContext>
 
+            {extraStatuses.length ? (
+                <Stack direction="row" spacing={2} sx={{ mt: 2, flexWrap: 'wrap' }}>
+                    {extraStatuses.map((col) => {
+                        const colTasks = tasksByStatus.get(col.id) || []
+                        return (
+                            <Box
+                                key={col.id}
+                                sx={{
+                                    width: 320,
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                                    {col.name}
+                                </Typography>
+                                <Box
+                                    sx={{
+                                        p: 1,
+                                        borderRadius: 1,
+                                        bgcolor: 'background.paper',
+                                        minHeight: 120,
+                                        border: '1px solid',
+                                        borderColor: 'divider',
+                                    }}
+                                >
+                                    {colTasks.map((t) => (
+                                        <Card
+                                            key={t.id}
+                                            variant="outlined"
+                                            sx={{
+                                                mb: 1,
+                                                borderLeft: `4px solid`,
+                                                borderLeftColor: deadlineColor(t),
+                                            }}
+                                            onClick={() => openModal(t.id)}
+                                        >
+                                            <CardContent sx={{ p: 1.25 }}>
+                                                <Typography variant="body2" fontWeight={700}>
+                                                    {t.title}
+                                                </Typography>
+                                                {t.parent_id ? (
+                                                    <Button
+                                                        component={RouterLink}
+                                                        to={`/tasks/${t.parent_id}`}
+                                                        size="small"
+                                                        variant="text"
+                                                    >
+                                                        Родительская задача
+                                                    </Button>
+                                                ) : null}
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {t.description || 'Нет описания'}
+                                                </Typography>
+                                            </CardContent>
+                                        </Card>
+                                    ))}
+                                    {!colTasks.length ? (
+                                        <Typography color="text.secondary" variant="caption">
+                                            Нет задач
+                                        </Typography>
+                                    ) : null}
+                                </Box>
+                            </Box>
+                        )
+                    })}
+                </Stack>
+            ) : null}
+
             <Snackbar
                 open={Boolean(notif)}
                 autoHideDuration={4000}
@@ -815,7 +1035,7 @@ export default function BoardPage() {
                         <DialogContent dividers>
                             <Stack spacing={2}>
                                 <TextField
-                                    label="Название"
+                                    label="Заголовок"
                                     fullWidth
                                     value={modalTask.task.title}
                                     onChange={(e) =>
@@ -860,7 +1080,7 @@ export default function BoardPage() {
                                             modalTask.task.assignee_id !== user?.id
                                         }
                                     >
-                                        {statuses.map((s) => (
+                                        {statusOptions.map((s) => (
                                             <MenuItem key={s.id} value={s.id}>
                                                 {s.name}
                                             </MenuItem>
@@ -947,6 +1167,74 @@ export default function BoardPage() {
                                             </MenuItem>
                                         ))}
                                     </TextField>
+                                    {modalTask.task.parent_id ? (
+                                        <Button
+                                            component={RouterLink}
+                                            to={`/tasks/${modalTask.task.parent_id}`}
+                                            size="small"
+                                        variant="outlined"
+                                    >
+                                            Родительская задача
+                                        </Button>
+                                    ) : null}
+                                    <TextField
+                                        label="Затраченное время"
+                                        type="number"
+                                        value={modalSpentValue}
+                                        onChange={(e) => setModalSpentValue(e.target.value)}
+                                        size="small"
+                                        sx={{ minWidth: 160 }}
+                                        InputProps={{ inputProps: { min: 0, step: 1 } }}
+                                        disabled={
+                                            !isAdmin &&
+                                            modalTask.task.assignee_id &&
+                                            modalTask.task.assignee_id !== user?.id
+                                        }
+                                    />
+                                    <TextField
+                                        select
+                                        label="Единицы"
+                                        size="small"
+                                        value={modalSpentUnit}
+                                        onChange={(e) => setModalSpentUnit(e.target.value)}
+                                        sx={{ minWidth: 160 }}
+                                        disabled={
+                                            !isAdmin &&
+                                            modalTask.task.assignee_id &&
+                                            modalTask.task.assignee_id !== user?.id
+                                        }
+                                    >
+                                        {timeUnits.map((u) => (
+                                            <MenuItem key={u.key} value={u.key}>
+                                                {u.label}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
+                                    <TextField
+                                        label="Оценка времени"
+                                        type="number"
+                                        value={modalEstimateValue}
+                                        onChange={(e) => setModalEstimateValue(e.target.value)}
+                                        size="small"
+                                        sx={{ minWidth: 160 }}
+                                        InputProps={{ inputProps: { min: 0, step: 1 } }}
+                                        disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
+                                    />
+                                    <TextField
+        select
+        label="Единицы оценки"
+        size="small"
+        value={modalEstimateUnit}
+        onChange={(e) => setModalEstimateUnit(e.target.value)}
+        sx={{ minWidth: 160 }}
+        disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
+    >
+        {timeUnits.map((u) => (
+            <MenuItem key={u.key} value={u.key}>
+                {u.label}
+            </MenuItem>
+        ))}
+    </TextField>
                                 </Stack>
                                 <Stack spacing={1}>
                                     <Typography variant="subtitle2">Дочерние задачи</Typography>
@@ -1176,6 +1464,11 @@ export default function BoardPage() {
                                         due_date: toApiDate(
                                             shiftToInputDate(modalTask.task.due_date)
                                         ),
+                                        spent_minutes: toMinutes(modalSpentValue, modalSpentUnit),
+                                        estimated_minutes: toMinutes(
+                                            modalEstimateValue,
+                                            modalEstimateUnit
+                                        ),
                                     })
                                 }
                             >
@@ -1227,7 +1520,7 @@ export default function BoardPage() {
                             sx={{ minWidth: 180 }}
                             disabled={!isAdmin && editingId && form.assignee_id !== user?.id}
                         >
-                            {statuses.map((s) => (
+                            {statusOptions.map((s) => (
                                 <MenuItem key={s.id} value={s.id}>
                                     {s.name}
                                 </MenuItem>
@@ -1333,6 +1626,74 @@ export default function BoardPage() {
                                 sx={{ minWidth: 160 }}
                                 InputLabelProps={{ shrink: true }}
                             />
+                            <TextField
+                                label="Затраченное время"
+                                type="number"
+                                value={form.spent_value}
+                                onChange={(e) =>
+                                    setForm((prev) => ({
+                                        ...prev,
+                                        spent_value: e.target.value,
+                                    }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 160 }}
+                                InputProps={{ inputProps: { min: 0, step: 1 } }}
+                            />
+                            <TextField
+                                select
+                                label="Единицы"
+                                size="small"
+                                value={form.spent_unit}
+                                onChange={(e) =>
+                                    setForm((prev) => ({
+                                        ...prev,
+                                        spent_unit: e.target.value,
+                                    }))
+                                }
+                                sx={{ minWidth: 160 }}
+                            >
+                                {timeUnits.map((u) => (
+                                    <MenuItem key={u.key} value={u.key}>
+                                        {u.label}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                label="Оценка времени"
+                                type="number"
+                                value={form.estimated_value}
+                                onChange={(e) =>
+                                    setForm((prev) => ({
+                                        ...prev,
+                                        estimated_value: e.target.value,
+                                    }))
+                                }
+                                size="small"
+                                sx={{ minWidth: 160 }}
+                                InputProps={{ inputProps: { min: 0, step: 1 } }}
+                                disabled={editingId ? !(isAdmin || user?.id === form.author_id) : false}
+                            />
+                            <TextField
+                                select
+                                label="Единицы оценки"
+                                size="small"
+                                value={form.estimated_unit}
+                                onChange={(e) =>
+                                    setForm((prev) => ({
+                                        ...prev,
+                                        estimated_unit: e.target.value,
+                                    }))
+                                }
+                                sx={{ minWidth: 160 }}
+                                disabled={editingId ? !(isAdmin || user?.id === form.author_id) : false}
+                            >
+                                {timeUnits.map((u) => (
+                                    <MenuItem key={u.key} value={u.key}>
+                                        {u.label}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
                         </Stack>
                     </Stack>
                 </DialogContent>
@@ -1350,3 +1711,5 @@ export default function BoardPage() {
         </Container>
     )
 }
+
+

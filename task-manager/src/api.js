@@ -20,8 +20,8 @@ export function login(email, password) {
     return api('/auth/login', { method: 'POST', body: { email, password } })
 }
 
-export function register({ email, password, name }) {
-    return api('/auth/register', { method: 'POST', body: { email, password, name } })
+export function register({ email, password, name, role }) {
+    return api('/auth/register', { method: 'POST', body: { email, password, name, role } })
 }
 
 export function getMe(token) {

@@ -28,6 +28,48 @@ import {
 } from '../api'
 import { useAuth } from '../AuthContext'
 
+const timeUnits = [
+    { key: 'minutes', label: 'минут', factor: 1 },
+    { key: 'hours', label: 'часов', factor: 60 },
+    { key: 'days', label: 'дней', factor: 60 * 24 },
+    { key: 'months', label: 'месяцев', factor: 60 * 24 * 30 },
+    { key: 'years', label: 'лет', factor: 60 * 24 * 365 },
+]
+
+function toMinutes(value, unitKey) {
+    const unit = timeUnits.find((u) => u.key === unitKey) || timeUnits[0]
+    const val = Number(value) || 0
+    return Math.max(0, Math.round(val * unit.factor))
+}
+
+function fromMinutes(minutes = 0) {
+    const mins = Number(minutes) || 0
+    if (!mins) return { value: 0, unit: 'minutes' }
+    const ordered = [...timeUnits].sort((a, b) => b.factor - a.factor)
+    for (const u of ordered) {
+        if (mins % u.factor === 0 && mins / u.factor >= 1) {
+            return { value: mins / u.factor, unit: u.key }
+        }
+    }
+    return { value: mins, unit: 'minutes' }
+}
+
+function formatSpent(minutes = 0) {
+    const { value, unit } = fromMinutes(minutes)
+    const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'минут'
+    return `${value} ${unitLabel}`
+}
+
+function spentColor(spent, estimated) {
+    const est = Number(estimated) || 0
+    const sp = Number(spent) || 0
+    if (!est) return 'default'
+    const ratio = sp / est
+    if (ratio <= 1) return 'success'
+    if (ratio <= 1.2) return 'warning'
+    return 'error'
+}
+
 export default function TaskPage() {
     const { taskId } = useParams()
     const { token, user } = useAuth()
@@ -52,6 +94,10 @@ export default function TaskPage() {
         priority_id: '',
         type_id: '',
         assignee_id: '',
+        spent_value: 0,
+        spent_unit: 'minutes',
+        estimated_value: 0,
+        estimated_unit: 'minutes',
     })
     const [error, setError] = useState('')
 
@@ -82,6 +128,8 @@ export default function TaskPage() {
             setChildren(data.children || [])
             setCommentPage(1)
             setHistoryPage(1)
+            const parsedSpent = fromMinutes(data.task.spent_minutes || 0)
+            const parsedEstimated = fromMinutes(data.task.estimated_minutes || 0)
             setForm({
                 title: data.task.title,
                 description: data.task.description || '',
@@ -89,6 +137,10 @@ export default function TaskPage() {
                 priority_id: data.task.priority_id,
                 type_id: data.task.type_id || '',
                 assignee_id: data.task.assignee_id || '',
+                spent_value: parsedSpent.value,
+                spent_unit: parsedSpent.unit,
+                estimated_value: parsedEstimated.value,
+                estimated_unit: parsedEstimated.unit,
             })
         } catch (e) {
             setError(e.message)
@@ -104,6 +156,8 @@ export default function TaskPage() {
                 priority_id: form.priority_id,
                 type_id: form.type_id || null,
                 assignee_id: form.assignee_id || null,
+                spent_minutes: toMinutes(form.spent_value, form.spent_unit),
+                estimated_minutes: toMinutes(form.estimated_value, form.estimated_unit),
             })
             await loadTask()
         } catch (e) {
@@ -187,13 +241,23 @@ export default function TaskPage() {
                     <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
                         <Chip label={`Статус: ${task.status_name}`} size="small" />
                         <Chip label={`Приоритет: ${task.priority_name}`} size="small" />
-                        <Chip label={`Тип: ${task.type_name || '—'}`} size="small" />
+                        <Chip label={`Тип: ${task.type_name || '-'}`} size="small" />
                         {task.assignee_name ? (
                             <Chip label={`Исп: ${task.assignee_name}`} size="small" />
                         ) : null}
                         <Chip
+                            label={`Затрачено: ${formatSpent(task.spent_minutes || 0)}`}
+                            size="small"
+                            color={spentColor(task.spent_minutes, task.estimated_minutes)}
+                        />
+                        <Chip
+                            label={`Оценка: ${formatSpent(task.estimated_minutes || 0)}`}
+                            size="small"
+                            color="default"
+                        />
+                        <Chip
                             label={`Дедлайн: ${
-                                task.due_date ? new Date(task.due_date).toLocaleDateString() : '—'
+                                task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'
                             }`}
                             size="small"
                         />
@@ -263,7 +327,7 @@ export default function TaskPage() {
                                     sx={{ minWidth: 140 }}
                                     size="small"
                                 >
-                                    <MenuItem value="">—</MenuItem>
+                                    <MenuItem value="">-</MenuItem>
                                     {types.map((t) => (
                                         <MenuItem key={t.id} value={t.id}>
                                             {t.name}
@@ -284,6 +348,64 @@ export default function TaskPage() {
                                     {users.map((u) => (
                                         <MenuItem key={u.id} value={u.id}>
                                             {u.name}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                                <TextField
+                                    label="Затраченное время"
+                                    type="number"
+                                    value={form.spent_value}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({ ...prev, spent_value: e.target.value }))
+                                    }
+                                    sx={{ minWidth: 160 }}
+                                    size="small"
+                                    InputProps={{ inputProps: { min: 0, step: 1 } }}
+                                    disabled={!(user?.role === 'admin' || user?.id === task.assignee_id)}
+                                />
+                                <TextField
+                                    select
+                                    label="Единицы"
+                                    value={form.spent_unit}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({ ...prev, spent_unit: e.target.value }))
+                                    }
+                                    sx={{ minWidth: 160 }}
+                                    size="small"
+                                    disabled={!(user?.role === 'admin' || user?.id === task.assignee_id)}
+                                >
+                                    {timeUnits.map((u) => (
+                                        <MenuItem key={u.key} value={u.key}>
+                                            {u.label}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                                <TextField
+                                    label="Оценка времени"
+                                    type="number"
+                                    value={form.estimated_value}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({ ...prev, estimated_value: e.target.value }))
+                                    }
+                                    sx={{ minWidth: 160 }}
+                                    size="small"
+                                    InputProps={{ inputProps: { min: 0, step: 1 } }}
+                                    disabled={!(user?.role === 'admin' || user?.id === task.author_id)}
+                                />
+                                <TextField
+                                    select
+                                    label="Единицы оценки"
+                                    value={form.estimated_unit}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({ ...prev, estimated_unit: e.target.value }))
+                                    }
+                                    sx={{ minWidth: 160 }}
+                                    size="small"
+                                    disabled={!(user?.role === 'admin' || user?.id === task.author_id)}
+                                >
+                                    {timeUnits.map((u) => (
+                                        <MenuItem key={u.key} value={u.key}>
+                                            {u.label}
                                         </MenuItem>
                                     ))}
                                 </TextField>
@@ -424,7 +546,7 @@ export default function TaskPage() {
                         {paginatedHistory.map((h) => (
                             <Paper key={h.id} variant="outlined" sx={{ p: 1.5 }}>
                                 <Typography variant="caption" color="text.secondary">
-                                    {h.action} · {new Date(h.created_at).toLocaleString()} · {h.author_name || 'system'}
+                                    {h.action} � {new Date(h.created_at).toLocaleString()} � {h.author_name || 'system'}
                                 </Typography>
                                 {h.new_value ? (
                                     <Typography variant="body2">
@@ -453,3 +575,6 @@ export default function TaskPage() {
         </Container>
     )
 }
+
+
+

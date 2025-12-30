@@ -32,9 +32,9 @@ export function AuthProvider({ children }) {
         setToken(tkn)
     }
 
-    const signup = async ({ email, password, name }) => {
+    const signup = async ({ email, password, name, role = 'гость' }) => {
         setError('')
-        const { token: tkn } = await apiRegister({ email, password, name })
+        const { token: tkn } = await apiRegister({ email, password, name, role })
         localStorage.setItem('tm-token', tkn)
         setToken(tkn)
     }
