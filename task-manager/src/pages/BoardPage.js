@@ -283,20 +283,32 @@ export default function BoardPage() {
     }
 
     function moveTaskToTrash(taskId) {
-        const t = tasks.find((task) => task.id === taskId)
+        const t = tasks.find((task) => String(task.id) === String(taskId))
         if (!t) return
-        setTasks((prev) => prev.filter((task) => task.id !== taskId))
-        syncTrash([...trashTasks.filter((task) => task.id !== taskId), t])
+        setTasks((prev) => prev.filter((task) => String(task.id) !== String(taskId)))
+        syncTrash([...trashTasks.filter((task) => String(task.id) !== String(taskId)), t])
         setTasks((prev) =>
-            prev.map((task) => (task.parent_id === taskId ? { ...task, parent_id: null } : task))
+            prev.map((task) =>
+                String(task.parent_id) === String(taskId) ? { ...task, parent_id: null } : task
+            )
         )
         setNotif('Задача перемещена в удаленные')
     }
 
     async function handleStatusChange(taskId, statusId) {
         if (isGuest) return
+        const targetStatus = statusOptions.find((s) => String(s.id) === String(statusId))
+        const nextId = targetStatus ? targetStatus.id : statusId
+        const nextName = targetStatus?.name
         try {
-            await updateTask(token, taskId, { status_id: statusId })
+            setTasks((prev) =>
+                prev.map((t) =>
+                    String(t.id) === String(taskId)
+                        ? { ...t, status_id: nextId, status_name: nextName }
+                        : t
+                )
+            )
+            await updateTask(token, taskId, { status_id: nextId })
             loadTasks()
         } catch (e) {
             setError(e.message)
@@ -485,8 +497,8 @@ export default function BoardPage() {
         const taskId = result.draggableId
         const destId = result.destination.droppableId
         const sourceId = result.source.droppableId
-        const taskFromTrash = trashTasks.find((t) => t.id === taskId)
-        const taskFromBoard = tasks.find((t) => t.id === taskId)
+        const taskFromTrash = trashTasks.find((t) => String(t.id) === String(taskId))
+        const taskFromBoard = tasks.find((t) => String(t.id) === String(taskId))
 
         if (destId === 'trash') {
             if (sourceId === 'trash') return
@@ -496,9 +508,18 @@ export default function BoardPage() {
 
         if (sourceId === 'trash' && destId !== 'trash') {
             if (!taskFromTrash) return
-            const newStatus = Number(destId)
+            const targetStatus = statusOptions.find((s) => String(s.id) === String(destId))
+            const newStatus = targetStatus ? targetStatus.id : destId
+            const statusName = targetStatus?.name
             syncTrash(trashTasks.filter((t) => t.id !== taskId))
             try {
+                setTasks((prev) => {
+                    const filtered = prev.filter((t) => String(t.id) !== String(taskId))
+                    return [
+                        ...filtered,
+                        { ...taskFromTrash, status_id: newStatus, status_name: statusName },
+                    ]
+                })
                 await updateTask(token, taskId, { status_id: newStatus })
                 loadTasks()
             } catch (e) {
@@ -507,7 +528,8 @@ export default function BoardPage() {
             return
         }
 
-        const newStatus = Number(destId)
+        const targetStatus = statusOptions.find((s) => String(s.id) === String(destId))
+        const newStatus = targetStatus ? targetStatus.id : destId
         const task = taskFromBoard
         if (!task || task.status_id === newStatus) return
         await handleStatusChange(taskId, newStatus)
@@ -521,7 +543,7 @@ export default function BoardPage() {
             (s) => (s.name || '').toLowerCase() === columnDraft.trim().toLowerCase()
         )
         if (nameExists) {
-            setError('������� � ����� ��������� ��� ����')
+            setError('Колонка с таким названием уже есть')
             return
         }
         try {
@@ -538,7 +560,7 @@ export default function BoardPage() {
     }
 
     async function handleRenameStatus(id) {
-        const nextName = window.prompt('����� �������� �������?')
+        const nextName = window.prompt('Новое название статуса?')
         if (!nextName) return
         try {
             await updateStatus(token, id, { name: nextName })
@@ -655,7 +677,7 @@ export default function BoardPage() {
                 Проект · доска
             </Typography>
             {error ? (
-                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
+                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('Колонка с таким названием уже есть')}>
                     {error}
                 </Alert>
             ) : null}
@@ -962,13 +984,33 @@ export default function BoardPage() {
                                                                     color="error"
                                                                     disabled={isGuest}
                                                                     onClick={() => {
-                                                                        const targetStatus = activeStatuses[0]?.id
-                                                                        if (colTasks.length && targetStatus && window.confirm('Переместить задачи в первую колонку и удалить эту?')) {
-                                                                            Promise.all(colTasks.map((t) => updateTask(token, t.id, { status_id: targetStatus }))).then(loadTasks)
-                                                                            return
+                                                                        const remove = async () => {
+                                                                            try {
+                                                                                if (colTasks.length) {
+                                                                                    await Promise.all(
+                                                                                        colTasks.map((t) => deleteTask(token, t.id))
+                                                                                    )
+                                                                                    setTasks((prev) =>
+                                                                                        prev.filter((t) => t.status_id !== col.id)
+                                                                                    )
+                                                                                }
+                                                                                await deleteStatus(token, col.id)
+                                                                                syncDeletedStatuses((prev) =>
+                                                                                    prev.filter((id) => id !== col.id)
+                                                                                )
+                                                                                setStatuses((prev) =>
+                                                                                    prev.filter((s) => s.id !== col.id)
+                                                                                )
+                                                                                syncTrash((prev) =>
+                                                                                    prev.filter((t) => t.status_id !== col.id)
+                                                                                )
+                                                                                loadTasks()
+                                                                            } catch (err) {
+                                                                                setError(err.message)
+                                                                            }
                                                                         }
-                                                                        if (!colTasks.length) {
-                                                                            loadTasks()
+                                                                        if (!colTasks.length || window.confirm('Удалить колонку вместе с её задачами?')) {
+                                                                            remove()
                                                                         }
                                                                     }}
                                                                 >
@@ -1807,6 +1849,8 @@ export default function BoardPage() {
         </Container>
     )
 }
+
+
 
 
 
