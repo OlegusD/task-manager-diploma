@@ -1,5 +1,5 @@
-﻿/* eslint-disable react-hooks/exhaustive-deps */
-import React, { useEffect, useState } from 'react'
+/* eslint-disable react-hooks/exhaustive-deps */
+import React, { useEffect, useMemo, useState } from 'react'
 import { useParams, Link as RouterLink, useNavigate } from 'react-router-dom'
 import {
     Container,
@@ -57,7 +57,7 @@ function fromMinutes(minutes = 0) {
 
 function formatSpent(minutes = 0) {
     const { value, unit } = fromMinutes(minutes)
-    const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'РјРёРЅСѓС‚'
+    const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'минут'
     return `${value} ${unitLabel}`
 }
 
@@ -76,6 +76,8 @@ export default function TaskPage() {
     const navigate = useNavigate()
     const { token, user } = useAuth()
     const isGuest = user?.role === 'гость'
+    const isAdmin = user?.role === 'admin'
+
     const [task, setTask] = useState(null)
     const [comments, setComments] = useState([])
     const [history, setHistory] = useState([])
@@ -104,7 +106,6 @@ export default function TaskPage() {
     })
     const [error, setError] = useState('')
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!token) return
         loadTask()
@@ -115,13 +116,27 @@ export default function TaskPage() {
             listUsers(token),
         ])
             .then(([sts, prs, tts, us]) => {
-                setStatuses(sts)
-                setPriorities(prs)
-                setTypes(tts)
-                setUsers(us)
+                setStatuses(sts || [])
+                setPriorities(prs || [])
+                setTypes(tts || [])
+                setUsers(us || [])
             })
             .catch(() => {})
     }, [token, taskId])
+
+    const uniqueStatuses = useMemo(() => {
+        const map = new Map()
+        statuses.forEach((s) => {
+            const key = (s.name || '').trim().toLowerCase()
+            const existing = map.get(key)
+            if (!existing || (task && task.status_id === s.id)) {
+                map.set(key, s)
+            }
+        })
+        return Array.from(map.values())
+    }, [statuses, task])
+
+    const statusMap = useMemo(() => new Map(uniqueStatuses.map((s) => [s.id, s.name])), [uniqueStatuses])
 
     async function loadTask() {
         try {
@@ -218,21 +233,18 @@ export default function TaskPage() {
     if (!task) {
         return (
             <Container sx={{ py: 4 }}>
-                <Typography>Р вЂ”Р В°Р С–РЎР‚РЎС“Р В·Р С”Р В°...</Typography>
+                <Typography>Загрузка...</Typography>
             </Container>
         )
     }
 
-    const statusLabel =
-        task.status_name ||
-        statuses.find((s) => s.id === task.status_id)?.name ||
-        'Р РЋРЎвЂљР В°РЎвЂљРЎС“РЎРѓ Р Р…Р ВµР С‘Р В·Р Р†Р ВµРЎРѓРЎвЂљР ВµР Р…'
+    const statusLabel = task.status_name || statusMap.get(task.status_id) || 'Статус не задан'
 
     return (
         <Container sx={{ py: 4 }}>
             <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
                 <Button variant="outlined" onClick={() => navigate(-1)}>
-                    Р СњР В°Р В·Р В°Р Т‘
+                    Назад
                 </Button>
                 <Typography variant="h5" fontWeight={800}>
                     {task.title}
@@ -240,7 +252,7 @@ export default function TaskPage() {
             </Stack>
             {task.parent_id ? (
                 <Typography variant="body2" sx={{ mb: 1 }}>
-                    Р В Р С•Р Т‘Р С‘РЎвЂљР ВµР В»РЎРЉРЎРѓР С”Р В°РЎРЏ Р В·Р В°Р Т‘Р В°РЎвЂЎР В°:{' '}
+                    Родительская задача:{' '}
                     <Link component={RouterLink} to={`/tasks/${task.parent_id}`} underline="hover">
                         {task.parent_title || task.parent_id}
                     </Link>
@@ -254,252 +266,198 @@ export default function TaskPage() {
             <Paper sx={{ p: 2 }}>
                 <Stack spacing={2}>
                     <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
-                        <Chip label={`Р РЋРЎвЂљР В°РЎвЂљРЎС“РЎРѓ: ${statusLabel}`} size="small" />
-                        <Chip
-                            label={`Р СџРЎР‚Р С‘Р С•РЎР‚Р С‘РЎвЂљР ВµРЎвЂљ: ${task.priority_name}`}
-                            size="small"
-                        />
-                        <Chip label={`Р СћР С‘Р С—: ${task.type_name || '-'}`} size="small" />
+                        <Chip label={`Статус: ${statusLabel}`} size="small" />
+                        <Chip label={`Приоритет: ${task.priority_name}`} size="small" />
+                        <Chip label={`Тип: ${task.type_name || '-'}`} size="small" />
                         {task.assignee_name ? (
-                            <Chip label={`Р ВРЎРѓР С—: ${task.assignee_name}`} size="small" />
+                            <Chip label={`Исп.: ${task.assignee_name}`} size="small" />
                         ) : null}
                         <Chip
-                            label={`Р вЂ”Р В°РЎвЂљРЎР‚Р В°РЎвЂЎР ВµР Р…Р С•: ${formatSpent(
-                                task.spent_minutes || 0
-                            )}`}
+                            label={`Затрачено: ${formatSpent(task.spent_minutes)}`}
                             size="small"
                             color={spentColor(task.spent_minutes, task.estimated_minutes)}
                         />
-                        <Chip
-                            label={`Р С›РЎвЂ Р ВµР Р…Р С”Р В°: ${formatSpent(
-                                task.estimated_minutes || 0
-                            )}`}
-                            size="small"
-                            color="default"
-                        />
-                        <Chip
-                            label={`Р вЂќР ВµР Т‘Р В»Р В°Р в„–Р Р…: ${
-                                task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'
-                            }`}
-                            size="small"
-                        />
+                        <Chip label={`Оценка: ${formatSpent(task.estimated_minutes)}`} size="small" />
+                        {task.due_date ? (
+                            <Chip
+                                label={`Дедлайн: ${new Date(task.due_date).toLocaleDateString()}`}
+                                size="small"
+                            />
+                        ) : null}
                     </Stack>
 
-                    <Box
-                        sx={{ border: '1px solid', borderColor: 'divider', p: 2, borderRadius: 1 }}
-                    >
-                        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-                            Р В Р ВµР Т‘Р В°Р С”РЎвЂљР С‘РЎР‚Р С•Р Р†Р В°РЎвЂљРЎРЉ
-                            Р В·Р В°Р Т‘Р В°РЎвЂЎРЎС“
-                        </Typography>
-                        <Stack spacing={2}>
+                    <Typography variant="h6" fontWeight={700}>
+                        Редактировать задачу
+                    </Typography>
+                    <Stack spacing={2}>
+                        <TextField
+                            label="Название"
+                            value={form.title}
+                            onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                            fullWidth
+                        />
+                        <TextField
+                            label="Описание"
+                            value={form.description}
+                            onChange={(e) =>
+                                setForm((prev) => ({ ...prev, description: e.target.value }))
+                            }
+                            fullWidth
+                            multiline
+                            minRows={3}
+                        />
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: 2,
+                            }}
+                        >
                             <TextField
-                                label="Р СњР В°Р В·Р Р†Р В°Р Р…Р С‘Р Вµ"
-                                value={form.title}
+                                select
+                                label="Статус"
+                                value={form.status_id}
                                 onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, title: e.target.value }))
+                                    setForm((prev) => ({ ...prev, status_id: Number(e.target.value) }))
                                 }
-                                fullWidth
-                                disabled={isGuest}
-                            />
-                            <TextField
-                                label="Р С›Р С—Р С‘РЎРѓР В°Р Р…Р С‘Р Вµ"
-                                value={form.description}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, description: e.target.value }))
-                                }
-                                fullWidth
-                                multiline
-                                minRows={3}
-                                disabled={isGuest}
-                            />
-                            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                                <TextField
-                                    select
-                                    label="Р РЋРЎвЂљР В°РЎвЂљРЎС“РЎРѓ"
-                                    value={form.status_id}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            status_id: Number(e.target.value),
-                                        }))
-                                    }
-                                    sx={{ minWidth: 160 }}
-                                    size="small"
-                                    disabled={isGuest}
-                                >
-                                    {statuses.map((s) => (
-                                        <MenuItem key={s.id} value={s.id}>
-                                            {s.name}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                                <TextField
-                                    select
-                                    label="Р СџРЎР‚Р С‘Р С•РЎР‚Р С‘РЎвЂљР ВµРЎвЂљ"
-                                    value={form.priority_id}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            priority_id: Number(e.target.value),
-                                        }))
-                                    }
-                                    sx={{ minWidth: 140 }}
-                                    size="small"
-                                    disabled={isGuest}
-                                >
-                                    {priorities.map((p) => (
-                                        <MenuItem key={p.id} value={p.id}>
-                                            {p.name}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                                <TextField
-                                    select
-                                    label="Р СћР С‘Р С—"
-                                    value={form.type_id}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            type_id: Number(e.target.value) || '',
-                                        }))
-                                    }
-                                    sx={{ minWidth: 140 }}
-                                    size="small"
-                                    disabled={isGuest}
-                                >
-                                    <MenuItem value="">-</MenuItem>
-                                    {types.map((t) => (
-                                        <MenuItem key={t.id} value={t.id}>
-                                            {t.name}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                                <TextField
-                                    select
-                                    label="Р ВРЎРѓР С—Р С•Р В»Р Р…Р С‘РЎвЂљР ВµР В»РЎРЉ"
-                                    value={form.assignee_id}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            assignee_id: e.target.value,
-                                        }))
-                                    }
-                                    sx={{ minWidth: 200 }}
-                                    size="small"
-                                    disabled={isGuest}
-                                >
-                                    <MenuItem value="">
-                                        Р СњР Вµ Р Р†РЎвЂ№Р В±РЎР‚Р В°Р Р…Р С•
-                                    </MenuItem>
-                                    {users.map((u) => (
-                                        <MenuItem key={u.id} value={u.id}>
-                                            {u.name}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                                <TextField
-                                    label="Р вЂ”Р В°РЎвЂљРЎР‚Р В°РЎвЂЎР ВµР Р…Р Р…Р С•Р Вµ Р Р†РЎР‚Р ВµР СРЎРЏ"
-                                    type="number"
-                                    value={form.spent_value}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            spent_value: e.target.value,
-                                        }))
-                                    }
-                                    sx={{ minWidth: 160 }}
-                                    size="small"
-                                    InputProps={{ inputProps: { min: 0, step: 1 } }}
-                                    disabled={
-                                        isGuest ||
-                                        !(user?.role === 'admin' || user?.id === task.assignee_id)
-                                    }
-                                />
-                                <TextField
-                                    select
-                                    label="Р вЂўР Т‘Р С‘Р Р…Р С‘РЎвЂ РЎвЂ№"
-                                    value={form.spent_unit}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({ ...prev, spent_unit: e.target.value }))
-                                    }
-                                    sx={{ minWidth: 160 }}
-                                    size="small"
-                                    disabled={
-                                        isGuest ||
-                                        !(user?.role === 'admin' || user?.id === task.assignee_id)
-                                    }
-                                >
-                                    {timeUnits.map((u) => (
-                                        <MenuItem key={u.key} value={u.key}>
-                                            {u.label}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                                <TextField
-                                    label="Р С›РЎвЂ Р ВµР Р…Р С”Р В° Р Р†РЎР‚Р ВµР СР ВµР Р…Р С‘"
-                                    type="number"
-                                    value={form.estimated_value}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            estimated_value: e.target.value,
-                                        }))
-                                    }
-                                    sx={{ minWidth: 160 }}
-                                    size="small"
-                                    InputProps={{ inputProps: { min: 0, step: 1 } }}
-                                    disabled={
-                                        isGuest ||
-                                        !(user?.role === 'admin' || user?.id === task.author_id)
-                                    }
-                                />
-                                <TextField
-                                    select
-                                    label="Р вЂўР Т‘Р С‘Р Р…Р С‘РЎвЂ РЎвЂ№ Р С•РЎвЂ Р ВµР Р…Р С”Р С‘"
-                                    value={form.estimated_unit}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({
-                                            ...prev,
-                                            estimated_unit: e.target.value,
-                                        }))
-                                    }
-                                    sx={{ minWidth: 160 }}
-                                    size="small"
-                                    disabled={
-                                        isGuest ||
-                                        !(user?.role === 'admin' || user?.id === task.author_id)
-                                    }
-                                >
-                                    {timeUnits.map((u) => (
-                                        <MenuItem key={u.key} value={u.key}>
-                                            {u.label}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                            </Stack>
-                            <Button
-                                variant="contained"
-                                onClick={saveTask}
-                                sx={{ alignSelf: 'flex-start' }}
+                                size="small"
+                                sx={{ minWidth: { xs: '100%', sm: 200 } }}
                                 disabled={isGuest}
                             >
-                                Р РЋР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘РЎвЂљРЎРЉ
-                                Р С‘Р В·Р СР ВµР Р…Р ВµР Р…Р С‘РЎРЏ
-                            </Button>
-                        </Stack>
-                    </Box>
+                                {uniqueStatuses.map((s) => (
+                                    <MenuItem key={s.id} value={s.id}>
+                                        {s.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                select
+                                label="Приоритет"
+                                value={form.priority_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, priority_id: Number(e.target.value) }))
+                                }
+                                size="small"
+                                sx={{ minWidth: { xs: '100%', sm: 180 } }}
+                                disabled={isGuest}
+                            >
+                                {priorities.map((p) => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                        {p.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                select
+                                label="Тип"
+                                value={form.type_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, type_id: Number(e.target.value) }))
+                                }
+                                size="small"
+                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
+                                disabled={isGuest}
+                            >
+                                {types.map((t) => (
+                                    <MenuItem key={t.id} value={t.id}>
+                                        {t.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                select
+                                label="Исполнитель"
+                                value={form.assignee_id}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, assignee_id: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: { xs: '100%', sm: 200 } }}
+                                disabled={!isAdmin}
+                            >
+                                <MenuItem value="">Не выбрано</MenuItem>
+                                {users.map((u) => (
+                                    <MenuItem key={u.id} value={u.id}>
+                                        {u.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                label="Затраченное время"
+                                type="number"
+                                value={form.spent_value}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, spent_value: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
+                                InputProps={{ inputProps: { min: 0, step: 1 } }}
+                            />
+                            <TextField
+                                select
+                                label="Единицы"
+                                size="small"
+                                value={form.spent_unit}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, spent_unit: e.target.value }))
+                                }
+                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
+                            >
+                                {timeUnits.map((u) => (
+                                    <MenuItem key={u.key} value={u.key}>
+                                        {u.label}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                            <TextField
+                                label="Оценка времени"
+                                type="number"
+                                value={form.estimated_value}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, estimated_value: e.target.value }))
+                                }
+                                size="small"
+                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
+                                InputProps={{ inputProps: { min: 0, step: 1 } }}
+                                disabled={!isAdmin && user?.id !== task.author_id}
+                            />
+                            <TextField
+                                select
+                                label="Единицы оценки"
+                                size="small"
+                                value={form.estimated_unit}
+                                onChange={(e) =>
+                                    setForm((prev) => ({ ...prev, estimated_unit: e.target.value }))
+                                }
+                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
+                                disabled={!isAdmin && user?.id !== task.author_id}
+                            >
+                                {timeUnits.map((u) => (
+                                    <MenuItem key={u.key} value={u.key}>
+                                        {u.label}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                        </Box>
+                        <Button
+                            variant="contained"
+                            onClick={saveTask}
+                            disabled={isGuest}
+                            sx={{ alignSelf: 'flex-start' }}
+                        >
+                            Сохранить изменения
+                        </Button>
+                    </Stack>
 
                     <Divider />
-
-                    <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                        Р С›Р В±Р Р…Р С•Р Р†Р С‘РЎвЂљРЎРЉ РЎРѓРЎвЂљР В°РЎвЂљРЎС“РЎРѓ
+                    <Typography variant="subtitle1" fontWeight={700}>
+                        Обновить статус
                     </Typography>
-                    <Stack direction="row" spacing={1} sx={{ mb: 2, flexWrap: 'wrap', rowGap: 1 }}>
-                        {statuses.map((s) => (
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 1 }}>
+                        {uniqueStatuses.map((s) => (
                             <Button
                                 key={s.id}
-                                variant={s.id === task.status_id ? 'contained' : 'outlined'}
+                                variant={task.status_id === s.id ? 'contained' : 'outlined'}
                                 size="small"
                                 onClick={() => handleStatusChange(s.id)}
                             >
@@ -509,111 +467,74 @@ export default function TaskPage() {
                     </Stack>
 
                     <Typography variant="subtitle1" fontWeight={700}>
-                        Р вЂќР С•РЎвЂЎР ВµРЎР‚Р Р…Р С‘Р Вµ Р В·Р В°Р Т‘Р В°РЎвЂЎР С‘
+                        Дочерние задачи
                     </Typography>
-                    <Stack spacing={1}>
-                        {children.length ? (
-                            children.map((c) => (
-                                <Link
-                                    key={c.id}
-                                    component={RouterLink}
-                                    to={`/tasks/${c.id}`}
-                                    underline="hover"
-                                >
+                    {children.length ? (
+                        <Stack spacing={1}>
+                            {children.map((c) => (
+                                <Link key={c.id} component={RouterLink} to={`/tasks/${c.id}`} underline="hover">
                                     {c.title}
                                 </Link>
-                            ))
-                        ) : (
-                            <Typography color="text.secondary" variant="body2">
-                                Р вЂќР С•РЎвЂЎР ВµРЎР‚Р Р…Р С‘РЎвЂ¦ Р В·Р В°Р Т‘Р В°РЎвЂЎ
-                                Р Р…Р ВµРЎвЂљ
-                            </Typography>
-                        )}
-                    </Stack>
+                            ))}
+                        </Stack>
+                    ) : (
+                        <Typography color="text.secondary">Дочерних задач нет</Typography>
+                    )}
 
-                    <Typography variant="subtitle1" fontWeight={700} sx={{ mt: 1 }}>
-                        Р С™Р С•Р СР СР ВµР Р…РЎвЂљР В°РЎР‚Р С‘Р С‘
+                    <Typography variant="subtitle1" fontWeight={700}>
+                        Комментарии
                     </Typography>
-                    <Stack spacing={1} sx={{ mt: 1 }}>
+                    <Stack spacing={1}>
                         {paginatedComments.map((c) => (
                             <Paper key={c.id} variant="outlined" sx={{ p: 1.5 }}>
-                                <Stack
-                                    direction="row"
-                                    justifyContent="space-between"
-                                    alignItems="center"
-                                >
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
                                     <Typography variant="caption" color="text.secondary">
-                                        {c.author_name} Р’В·{' '}
-                                        {new Date(c.created_at).toLocaleString()}
+                                        {c.author_name || '—'} · {new Date(c.created_at).toLocaleString()}
                                     </Typography>
-                                    {isGuest
-                                        ? null
-                                        : (user?.role === 'admin' || c.author_id === user?.id) && (
-                                              <Stack direction="row" spacing={1}>
-                                                  {commentEditId === c.id ? (
-                                                      <>
-                                                          <Button
-                                                              size="small"
-                                                              onClick={() =>
-                                                                  handleSaveComment(c.id)
-                                                              }
-                                                          >
-                                                              Р РЋР С•РЎвЂ¦РЎР‚Р В°Р Р…Р С‘РЎвЂљРЎРЉ
-                                                          </Button>
-                                                          <Button
-                                                              size="small"
-                                                              color="inherit"
-                                                              onClick={() => {
-                                                                  setCommentEditId(null)
-                                                                  setCommentEditBody('')
-                                                              }}
-                                                          >
-                                                              Р С›РЎвЂљР СР ВµР Р…Р В°
-                                                          </Button>
-                                                      </>
-                                                  ) : (
-                                                      <>
-                                                          <Button
-                                                              size="small"
-                                                              onClick={() => {
-                                                                  setCommentEditId(c.id)
-                                                                  setCommentEditBody(c.body)
-                                                              }}
-                                                          >
-                                                              Р В Р ВµР Т‘Р В°Р С”РЎвЂљР С‘РЎР‚Р С•Р Р†Р В°РЎвЂљРЎРЉ
-                                                          </Button>
-                                                          <Button
-                                                              size="small"
-                                                              color="error"
-                                                              onClick={() =>
-                                                                  handleDeleteComment(c.id)
-                                                              }
-                                                          >
-                                                              Р Р€Р Т‘Р В°Р В»Р С‘РЎвЂљРЎРЉ
-                                                          </Button>
-                                                      </>
-                                                  )}
-                                              </Stack>
-                                          )}
+                                    {(isAdmin || c.author_id === user?.id) && (
+                                        <Stack direction="row" spacing={1}>
+                                            <Button
+                                                size="small"
+                                                onClick={() => {
+                                                    setCommentEditId(c.id)
+                                                    setCommentEditBody(c.body)
+                                                }}
+                                            >
+                                                Править
+                                            </Button>
+                                            <Button
+                                                size="small"
+                                                color="error"
+                                                onClick={() => handleDeleteComment(c.id)}
+                                            >
+                                                Удалить
+                                            </Button>
+                                        </Stack>
+                                    )}
                                 </Stack>
                                 {commentEditId === c.id ? (
-                                    <TextField
-                                        fullWidth
-                                        multiline
-                                        minRows={2}
-                                        sx={{ mt: 1 }}
-                                        value={commentEditBody}
-                                        onChange={(e) => setCommentEditBody(e.target.value)}
-                                    />
+                                    <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
+                                        <TextField
+                                            fullWidth
+                                            size="small"
+                                            multiline
+                                            minRows={2}
+                                            value={commentEditBody}
+                                            onChange={(e) => setCommentEditBody(e.target.value)}
+                                        />
+                                        <Button variant="contained" onClick={() => handleSaveComment(c.id)}>
+                                            Сохранить
+                                        </Button>
+                                    </Box>
                                 ) : (
-                                    <Typography variant="body2">{c.body}</Typography>
+                                    <Typography variant="body2" sx={{ mt: 0.5 }}>
+                                        {c.body}
+                                    </Typography>
                                 )}
                             </Paper>
                         ))}
                         {!comments.length ? (
-                            <Typography color="text.secondary" variant="body2">
-                                Р СњР ВµРЎвЂљ Р С”Р С•Р СР СР ВµР Р…РЎвЂљР В°РЎР‚Р С‘Р ВµР Р†
-                            </Typography>
+                            <Typography color="text.secondary">Нет комментариев</Typography>
                         ) : (
                             <Pagination
                                 size="small"
@@ -622,47 +543,44 @@ export default function TaskPage() {
                                 onChange={(_, page) => setCommentPage(page)}
                             />
                         )}
+                        <Box
+                            component="form"
+                            onSubmit={handleAddComment}
+                            sx={{ display: 'flex', gap: 1, alignItems: 'center' }}
+                        >
+                            <TextField
+                                size="small"
+                                fullWidth
+                                label="Новый комментарий"
+                                value={commentDraft}
+                                onChange={(e) => setCommentDraft(e.target.value)}
+                            />
+                            <Button type="submit" variant="outlined" disabled={isGuest}>
+                                Добавить
+                            </Button>
+                        </Box>
                     </Stack>
 
-                    <Box component="form" onSubmit={handleAddComment} sx={{ mt: 1 }}>
-                        <TextField
-                            fullWidth
-                            multiline
-                            minRows={2}
-                            label="Р СњР С•Р Р†РЎвЂ№Р в„– Р С”Р С•Р СР СР ВµР Р…РЎвЂљР В°РЎР‚Р С‘Р в„–"
-                            value={commentDraft}
-                            onChange={(e) => setCommentDraft(e.target.value)}
-                        />
-                        <Button type="submit" variant="contained" sx={{ mt: 1 }}>
-                            Р вЂќР С•Р В±Р В°Р Р†Р С‘РЎвЂљРЎРЉ
-                        </Button>
-                    </Box>
-
-                    <Divider sx={{ my: 1 }} />
-
+                    <Divider />
                     <Typography variant="subtitle1" fontWeight={700}>
-                        Р ВРЎРѓРЎвЂљР С•РЎР‚Р С‘РЎРЏ
+                        История
                     </Typography>
-                    <Stack spacing={1} sx={{ mt: 1 }}>
+                    <Stack spacing={1}>
                         {paginatedHistory.map((h) => (
-                            <Paper key={h.id} variant="outlined" sx={{ p: 1.5 }}>
+                            <Paper key={h.id} variant="outlined" sx={{ p: 1 }}>
                                 <Typography variant="caption" color="text.secondary">
-                                    {h.action} Р’В· {new Date(h.created_at).toLocaleString()} Р’В·{' '}
+                                    {h.action} · {new Date(h.created_at).toLocaleString()} ·{' '}
                                     {h.author_name || 'system'}
                                 </Typography>
                                 {h.new_value ? (
-                                    <Typography variant="body2">
-                                        {typeof h.new_value === 'object'
-                                            ? JSON.stringify(h.new_value)
-                                            : String(h.new_value)}
+                                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                                        {JSON.stringify(h.new_value, null, 2)}
                                     </Typography>
                                 ) : null}
                             </Paper>
                         ))}
                         {!history.length ? (
-                            <Typography color="text.secondary" variant="body2">
-                                Р ВРЎРѓРЎвЂљР С•РЎР‚Р С‘РЎРЏ Р С—РЎС“РЎРѓРЎвЂљР В°
-                            </Typography>
+                            <Typography color="text.secondary">История пуста</Typography>
                         ) : (
                             <Pagination
                                 size="small"

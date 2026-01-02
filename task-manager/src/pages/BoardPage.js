@@ -251,6 +251,7 @@ export default function BoardPage() {
                 }
                 keep.push(t)
             })
+            let nextTrash = trashTasks
             if (toTrash.length) {
                 const known = new Set(trashTasks.map((t) => t.id))
                 const merged = [...trashTasks]
@@ -260,26 +261,57 @@ export default function BoardPage() {
                         known.add(t.id)
                     }
                 })
-                syncTrash(merged)
+                nextTrash = merged
+                syncTrash(nextTrash)
             }
             setTasks(keep)
+            cleanupDeletedStatuses(keep, nextTrash)
         } catch (e) {
             setError(e.message)
         }
     }
 
     function syncTrash(next) {
-        setTrashTasks(next)
-        try {
-            localStorage.setItem('trashTasks', JSON.stringify(next))
-        } catch {}
+        setTrashTasks((prev) => {
+            const value = typeof next === 'function' ? next(prev) : next || []
+            try {
+                localStorage.setItem('trashTasks', JSON.stringify(value))
+            } catch {}
+            return value
+        })
     }
 
     function syncDeletedStatuses(next) {
-        setDeletedStatusIds(next)
-        try {
-            localStorage.setItem('deletedStatuses', JSON.stringify(next))
-        } catch {}
+        setDeletedStatusIds((prev) => {
+            const value = typeof next === 'function' ? next(prev) : next || []
+            try {
+                localStorage.setItem('deletedStatuses', JSON.stringify(value))
+            } catch {}
+            return value
+        })
+    }
+
+    function cleanupDeletedStatuses(nextTasks = tasks, nextTrash = trashTasks) {
+        const used = new Set()
+        nextTasks.forEach((t) => used.add(String(t.status_id)))
+        nextTrash.forEach((t) => used.add(String(t.status_id)))
+        // Убираем локально статусы из state, если они отмечены как удаленные и больше не используются.
+        const unusedDeleted = deletedStatusIds.filter((id) => !used.has(String(id)))
+        setStatuses((prev) =>
+            prev.filter((s) => {
+                if (unusedDeleted.includes(s.id)) return false
+                if (!deletedStatusIds.includes(s.id)) return true
+                return used.has(String(s.id))
+            })
+        )
+        if (unusedDeleted.length) {
+            syncDeletedStatuses((prev) => prev.filter((id) => !unusedDeleted.includes(id)))
+            unusedDeleted.forEach((id) =>
+                deleteStatus(token, Number(id)).catch(() => {
+                    /* игнорируем, скрываем локально */
+                })
+            )
+        }
     }
 
     function moveTaskToTrash(taskId) {
@@ -301,13 +333,13 @@ export default function BoardPage() {
         const nextId = targetStatus ? targetStatus.id : statusId
         const nextName = targetStatus?.name
         try {
-            setTasks((prev) =>
-                prev.map((t) =>
-                    String(t.id) === String(taskId)
-                        ? { ...t, status_id: nextId, status_name: nextName }
-                        : t
-                )
+            const updated = tasks.map((t) =>
+                String(t.id) === String(taskId)
+                    ? { ...t, status_id: Number(nextId), status_name: nextName }
+                    : t
             )
+            setTasks(updated)
+            cleanupDeletedStatuses(updated, trashTasks)
             await updateTask(token, taskId, { status_id: nextId })
             loadTasks()
         } catch (e) {
@@ -511,16 +543,34 @@ export default function BoardPage() {
             const targetStatus = statusOptions.find((s) => String(s.id) === String(destId))
             const newStatus = targetStatus ? targetStatus.id : destId
             const statusName = targetStatus?.name
-            syncTrash(trashTasks.filter((t) => t.id !== taskId))
+            const oldStatusId = taskFromTrash.status_id
+            const nextTrash = trashTasks.filter((t) => String(t.id) !== String(taskId))
+            syncTrash(nextTrash)
             try {
-                setTasks((prev) => {
-                    const filtered = prev.filter((t) => String(t.id) !== String(taskId))
+                const nextTasks = (() => {
+                    const filtered = tasks.filter((t) => String(t.id) !== String(taskId))
                     return [
                         ...filtered,
-                        { ...taskFromTrash, status_id: newStatus, status_name: statusName },
+                        { ...taskFromTrash, status_id: Number(newStatus), status_name: statusName },
                     ]
-                })
+                })()
+                setTasks(nextTasks)
                 await updateTask(token, taskId, { status_id: newStatus })
+                const statusStillUsed =
+                    nextTasks.some((t) => String(t.status_id) === String(oldStatusId)) ||
+                    nextTrash.some((t) => String(t.status_id) === String(oldStatusId))
+                if (!statusStillUsed) {
+                    setStatuses((prev) => prev.filter((s) => String(s.id) !== String(oldStatusId)))
+                    syncDeletedStatuses((prev) =>
+                        prev.filter((id) => String(id) !== String(oldStatusId))
+                    )
+                    try {
+                        await deleteStatus(token, Number(oldStatusId))
+                    } catch (err) {
+                        setError(err.message)
+                    }
+                }
+                cleanupDeletedStatuses(nextTasks, nextTrash)
                 loadTasks()
             } catch (e) {
                 setError(e.message)

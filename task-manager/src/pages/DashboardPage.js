@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/exhaustive-deps */
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import {
     Container,
     Typography,
@@ -10,7 +10,6 @@ import {
     CardContent,
     TextField,
     Alert,
-    Grid,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -20,18 +19,20 @@ import {
 } from '@mui/material'
 import { Link as RouterLink } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
-import { listProjects, createProject, listUsers } from '../api'
+import { listProjects, createProject, updateProject, listUsers, listTasks } from '../api'
 
 export default function DashboardPage() {
     const { token, user } = useAuth()
+    const isAdmin = user?.role === 'admin'
     const [projects, setProjects] = useState([])
     const [people, setPeople] = useState([])
+    const [projectAssignees, setProjectAssignees] = useState({})
     const [newProject, setNewProject] = useState({ name: '', description: '', member_ids: [] })
+    const [editProject, setEditProject] = useState(null)
     const [message, setMessage] = useState('')
     const [error, setError] = useState('')
     const [projectModal, setProjectModal] = useState(false)
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!token) return
         loadData()
@@ -39,22 +40,81 @@ export default function DashboardPage() {
 
     async function loadData() {
         try {
-            const [pr, staff] = await Promise.all([listProjects(token), listUsers(token)])
-            setProjects(pr)
-            setPeople(staff)
+            const [pr, staff, taskList] = await Promise.all([
+                listProjects(token),
+                listUsers(token),
+                listTasks(token, {}),
+            ])
+            setProjects(pr || [])
+            setPeople(staff || [])
+            const byProject = {}
+            taskList?.forEach((t) => {
+                if (!t.project_id || !t.assignee_id) return
+                const key = String(t.project_id)
+                if (!byProject[key]) byProject[key] = new Set()
+                byProject[key].add(t.assignee_id)
+            })
+            const normalized = {}
+            Object.entries(byProject).forEach(([k, set]) => {
+                normalized[k] = Array.from(set)
+            })
+            setProjectAssignees(normalized)
         } catch (e) {
             setError(e.message)
         }
     }
 
+    function memberIdsOf(project) {
+        return (
+            project?.member_ids ||
+            project?.members?.map((m) => m.id) ||
+            []
+        ).map((id) => String(id))
+    }
+
+    function participantsFor(project) {
+        const base = new Set(memberIdsOf(project))
+        const fromTasks = projectAssignees[String(project.id)] || []
+        fromTasks.forEach((id) => base.add(String(id)))
+        return Array.from(base)
+    }
+
+    const visibleProjects = useMemo(() => {
+        if (isAdmin) return projects
+        return projects.filter((p) => {
+            const members = participantsFor(p)
+            const explicitFlag = p.is_member === true
+            return explicitFlag || members.includes(String(user?.id))
+        })
+    }, [projects, isAdmin, user, projectAssignees])
+
     async function handleCreateProject(e) {
         e?.preventDefault()
-        if (!newProject.name.trim()) return setError('������� �������� �������')
+        if (!newProject.name.trim()) return setError('Введите название проекта')
         try {
             await createProject(token, newProject)
             setNewProject({ name: '', description: '', member_ids: [] })
-            setMessage('������ ������')
+            setMessage('Проект создан')
             setProjectModal(false)
+            loadData()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function handleUpdateProject() {
+        if (!editProject || !editProject.name.trim()) {
+            setError('Введите название проекта')
+            return
+        }
+        try {
+            await updateProject(token, editProject.id, {
+                name: editProject.name,
+                description: editProject.description,
+                member_ids: editProject.member_ids || [],
+            })
+            setMessage('Проект обновлен')
+            setEditProject(null)
             loadData()
         } catch (e) {
             setError(e.message)
@@ -63,9 +123,17 @@ export default function DashboardPage() {
 
     return (
         <Container sx={{ py: 6 }}>
-            <Typography variant="h4" gutterBottom fontWeight={800}>
-                ������� ������
-            </Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
+                <Typography variant="h4" fontWeight={800}>
+                    Проекты
+                </Typography>
+                {isAdmin ? (
+                    <Button variant="contained" onClick={() => setProjectModal(true)}>
+                        Создать проект
+                    </Button>
+                ) : null}
+            </Stack>
+
             {message ? (
                 <Alert severity="success" sx={{ mb: 2 }} onClose={() => setMessage('')}>
                     {message}
@@ -77,150 +145,164 @@ export default function DashboardPage() {
                 </Alert>
             ) : null}
 
-            <Grid container spacing={3} alignItems="flex-start">
-                <Grid item xs={12} md={7}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                        <Typography variant="h6">�������</Typography>
-                        {user?.role === 'admin' ? (
-                            <Button
-                                size="small"
-                                variant="contained"
-                                onClick={() => setProjectModal(true)}
-                                sx={{ px: 1.75, py: 0.6, fontSize: 14 }}
-                            >
-                                ������� ������
-                            </Button>
-                        ) : null}
-                    </Stack>
-                    <Stack spacing={2} sx={{ mt: 2 }}>
-                        {projects.map((p) => (
-                            <Card key={p.id} variant="outlined">
-                                <CardContent>
-                                    <Typography variant="subtitle1" fontWeight={700}>
-                                        {p.name}
-                                    </Typography>
-                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                                        {p.description || '��� ��������'}
-                                    </Typography>
-                                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                                        <Chip size="small" label={`����������: ${p.members_count ?? 0}`} />
-                                    </Stack>
-                                    <Stack direction="row" spacing={1}>
-                                        <Button
-                                            component={RouterLink}
-                                            to={`/projects/${p.id}/board`}
-                                            variant="contained"
-                                            size="small"
-                                        >
-                                            �����
+            <Stack spacing={2}>
+                {visibleProjects.map((p) => {
+                    const participants = participantsFor(p)
+                    const participantNames = participants
+                        .map((id) => people.find((u) => String(u.id) === String(id))?.name)
+                        .filter(Boolean)
+                    return (
+                        <Card key={p.id} variant="outlined">
+                            <CardContent>
+                                <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                                    <Box sx={{ flex: 1, pr: 2 }}>
+                                        <Typography variant="subtitle1" fontWeight={700}>
+                                            {p.name}
+                                        </Typography>
+                                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                            {p.description || 'Описание не задано'}
+                                        </Typography>
+                                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1, flexWrap: 'wrap', rowGap: 0.5 }}>
+                                            <Chip size="small" label={`Участников: ${participants.length}`} />
+                                            {participantNames.slice(0, 5).map((n) => (
+                                                <Chip key={n} size="small" label={n} variant="outlined" />
+                                            ))}
+                                            {participantNames.length > 5 ? (
+                                                <Chip size="small" label={`+${participantNames.length - 5}`} variant="outlined" />
+                                            ) : null}
+                                        </Stack>
+                                        <Stack direction="row" spacing={1}>
+                                            <Button
+                                                component={RouterLink}
+                                                to={`/projects/${p.id}/board`}
+                                                variant="contained"
+                                                size="small"
+                                            >
+                                                Доска
+                                            </Button>
+                                            <Button
+                                                component={RouterLink}
+                                                to={`/projects/${p.id}/list`}
+                                                variant="outlined"
+                                                size="small"
+                                            >
+                                                Список
+                                            </Button>
+                                        </Stack>
+                                    </Box>
+                                    {isAdmin ? (
+                                        <Button size="small" onClick={() =>
+                                            setEditProject({
+                                                ...p,
+                                                member_ids: memberIdsOf(p),
+                                            })
+                                        }>
+                                            Редактировать
                                         </Button>
-                                        <Button
-                                            component={RouterLink}
-                                            to={`/projects/${p.id}/list`}
-                                            variant="outlined"
-                                            size="small"
-                                        >
-                                            ������
-                                        </Button>
-                                    </Stack>
-                                </CardContent>
-                            </Card>
-                        ))}
-                        {!projects.length ? (
-                            <Typography color="text.secondary">�������� ���� ���</Typography>
-                        ) : null}
-                    </Stack>
-                </Grid>
+                                    ) : null}
+                                </Stack>
+                            </CardContent>
+                        </Card>
+                    )
+                })}
+                {!visibleProjects.length ? (
+                    <Typography color="text.secondary">Нет доступных проектов</Typography>
+                ) : null}
+            </Stack>
 
-                <Grid item xs={12} md={5}>
-                    <Typography variant="subtitle1" fontWeight={700}>
-                        ����������
-                    </Typography>
-                    <Stack spacing={1} sx={{ mt: 1 }}>
-                        {people.map((p) => (
-                            <Card key={p.id} variant="outlined">
-                                <CardContent sx={{ py: 1.5 }}>
-                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                        <Box>
-                                            <Typography variant="body1" fontWeight={600}>
-                                                {p.name}
-                                            </Typography>
-                                            <Typography variant="caption" color="text.secondary">
-                                                {p.email} � {p.role}
-                                            </Typography>
-                                        </Box>
-                                    </Stack>
-                                </CardContent>
-                            </Card>
-                        ))}
-                        {!people.length ? (
-                            <Typography color="text.secondary">����������� ���</Typography>
-                        ) : null}
-                    </Stack>
-
-                    <Button
-                        component={RouterLink}
-                        to="/team"
-                        variant="outlined"
-                        fullWidth
-                        sx={{ mt: 2 }}
-                    >
-                        ���������� ������������
-                    </Button>
-                </Grid>
-            </Grid>
-
-            <Dialog open={projectModal} fullWidth maxWidth="sm" onClose={() => setProjectModal(false)}>
-                <DialogTitle>������� ������</DialogTitle>
-                <DialogContent dividers>
-                    <Stack spacing={2}>
+            <Dialog open={projectModal} onClose={() => setProjectModal(false)} fullWidth maxWidth="sm">
+                <DialogTitle>Создать проект</DialogTitle>
+                <DialogContent>
+                    <Stack spacing={2} sx={{ mt: 1 }}>
                         <TextField
-                            label="��������"
+                            label="Название"
                             value={newProject.name}
                             onChange={(e) => setNewProject((prev) => ({ ...prev, name: e.target.value }))}
                             fullWidth
                         />
                         <TextField
-                            label="��������"
+                            label="Описание"
                             value={newProject.description}
                             onChange={(e) => setNewProject((prev) => ({ ...prev, description: e.target.value }))}
-                            fullWidth
                             multiline
                             minRows={2}
+                            fullWidth
                         />
                         <TextField
                             select
-                            label="���������"
-                            SelectProps={{ multiple: true }}
+                            label="Участники"
                             value={newProject.member_ids}
                             onChange={(e) =>
-                                setNewProject((prev) => ({
-                                    ...prev,
-                                    member_ids: Array.isArray(e.target.value) ? e.target.value : [],
-                                }))
+                                setNewProject((prev) => ({ ...prev, member_ids: e.target.value }))
                             }
+                            SelectProps={{ multiple: true }}
                             fullWidth
-                            size="small"
                         >
                             {people.map((p) => (
                                 <MenuItem key={p.id} value={p.id}>
-                                    {p.name} ({p.email})
+                                    {p.name}
                                 </MenuItem>
                             ))}
                         </TextField>
                     </Stack>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setProjectModal(false)}>������</Button>
+                    <Button onClick={() => setProjectModal(false)}>Отмена</Button>
                     <Button variant="contained" onClick={handleCreateProject}>
-                        �������
+                        Создать
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={Boolean(editProject)} onClose={() => setEditProject(null)} fullWidth maxWidth="sm">
+                <DialogTitle>Редактировать проект</DialogTitle>
+                <DialogContent>
+                    {editProject ? (
+                        <Stack spacing={2} sx={{ mt: 1 }}>
+                            <TextField
+                                label="Название"
+                                value={editProject.name}
+                                onChange={(e) =>
+                                    setEditProject((prev) => ({ ...prev, name: e.target.value }))
+                                }
+                                fullWidth
+                            />
+                            <TextField
+                                label="Описание"
+                                value={editProject.description || ''}
+                                onChange={(e) =>
+                                    setEditProject((prev) => ({ ...prev, description: e.target.value }))
+                                }
+                                multiline
+                                minRows={2}
+                                fullWidth
+                            />
+                            <TextField
+                                select
+                                label="Участники"
+                                value={editProject.member_ids || []}
+                                onChange={(e) =>
+                                    setEditProject((prev) => ({ ...prev, member_ids: e.target.value }))
+                                }
+                                SelectProps={{ multiple: true }}
+                                fullWidth
+                            >
+                                {people.map((p) => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                        {p.name}
+                                    </MenuItem>
+                                ))}
+                            </TextField>
+                        </Stack>
+                    ) : null}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setEditProject(null)}>Отмена</Button>
+                    <Button variant="contained" onClick={handleUpdateProject}>
+                        Сохранить
                     </Button>
                 </DialogActions>
             </Dialog>
         </Container>
     )
 }
-
-
-
-

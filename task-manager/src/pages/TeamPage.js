@@ -33,17 +33,18 @@ import {
 
 export default function TeamPage() {
     const { token, user } = useAuth()
+    const isAdmin = user?.role === 'admin'
     const [people, setPeople] = useState([])
-    const [form, setForm] = useState({ name: '', email: '', password: '' })
+    const [form, setForm] = useState({ name: '', email: '', password: '', role: 'гость' })
     const [roles, setRoles] = useState([])
     const [newRole, setNewRole] = useState('')
+    const [newRoleAdmin, setNewRoleAdmin] = useState(false)
     const [message, setMessage] = useState('')
     const [error, setError] = useState('')
     const [editUser, setEditUser] = useState(null)
     const [roleModal, setRoleModal] = useState(false)
     const [roleEdits, setRoleEdits] = useState({})
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!token) return
         load()
@@ -53,7 +54,7 @@ export default function TeamPage() {
         try {
             const data = await listUsers(token)
             setPeople(data)
-            if (user?.role === 'admin') {
+            if (isAdmin) {
                 const rs = await listRoles(token)
                 setRoles(rs)
                 const map = {}
@@ -61,7 +62,6 @@ export default function TeamPage() {
                     map[r.id] = r.name
                     map[`${r.id}-admin`] = r.is_admin
                 })
-                map.newAdmin = false
                 setRoleEdits(map)
             }
         } catch (e) {
@@ -81,18 +81,18 @@ export default function TeamPage() {
     async function handleSubmit(e) {
         e.preventDefault()
         setMessage('')
-        if (user?.role !== 'admin') {
-            setError('��������� ����������� ����� ������ �������������')
+        if (!isAdmin) {
+            setError('Только администратор может создавать пользователей')
             return
         }
         if (formErrors.name || formErrors.email || formErrors.password) {
-            setError('��������� ��������� ���, email � ������ (��� 6 ��������)')
+            setError('Заполните корректно имя, email и пароль (мин 6 символов)')
             return
         }
         try {
-            await createUser(token, { ...form, role: form.role || '�����������' })
-            setForm({ name: '', email: '', password: '' })
-            setMessage('��������� ��������')
+            await createUser(token, { ...form })
+            setForm({ name: '', email: '', password: '', role: 'гость' })
+            setMessage('Пользователь создан')
             load()
         } catch (e) {
             setError(e.message)
@@ -100,10 +100,10 @@ export default function TeamPage() {
     }
 
     async function handleDelete(id) {
-        if (!window.confirm('������� ����������?')) return
+        if (!window.confirm('Удалить пользователя?')) return
         try {
             await deleteUser(token, id)
-            setMessage('��������� ������')
+            setMessage('Пользователь удален')
             load()
         } catch (e) {
             setError(e.message)
@@ -113,12 +113,12 @@ export default function TeamPage() {
     async function handleSaveUser(payload) {
         if (!editUser) return
         try {
-            if (user?.role === 'admin' && editUser.id !== user.id) {
+            if (isAdmin && editUser.id !== user.id) {
                 await updateUser(token, editUser.id, payload)
             } else {
                 await updateMe(token, payload)
             }
-            setMessage('������ ������������ ���������')
+            setMessage('Пользователь обновлен')
             setEditUser(null)
             load()
         } catch (e) {
@@ -130,26 +130,23 @@ export default function TeamPage() {
         e.preventDefault()
         if (!newRole.trim()) return
         try {
-            const isAdmin = roleEdits.newAdmin === true
-            await createRole(token, newRole.trim(), isAdmin)
+            await createRole(token, newRole.trim(), newRoleAdmin)
             setNewRole('')
-            setRoleEdits((prev) => ({ ...prev, newAdmin: false }))
-            setMessage('���� �������')
+            setNewRoleAdmin(false)
+            setMessage('Роль создана')
             load()
         } catch (e) {
             setError(e.message)
         }
     }
 
-    async function handleUpdateRole(id, payload) {
-        const name = payload?.name || roleEdits[id]
-        const isAdmin =
-            payload?.is_admin ??
-            (roleEdits[`${id}-admin`] !== undefined ? roleEdits[`${id}-admin`] : undefined)
-        if (!name?.trim() && isAdmin === undefined) return
+    async function handleUpdateRole(id) {
+        const name = roleEdits[id]
+        const isAdminRole = roleEdits[`${id}-admin`]
+        if (!name?.trim()) return
         try {
-            await updateRole(token, id, name?.trim(), isAdmin)
-            setMessage('���� ���������')
+            await updateRole(token, id, name.trim(), isAdminRole)
+            setMessage('Роль обновлена')
             load()
         } catch (e) {
             setError(e.message)
@@ -157,10 +154,10 @@ export default function TeamPage() {
     }
 
     async function handleDeleteRole(id) {
-        if (!window.confirm('������� ����? ������������ � ���� ����� �� ������ ������������.')) return
+        if (!window.confirm('Удалить роль? Пользователи с этой ролью станут гостями.')) return
         try {
             await deleteRoleApi(token, id)
-            setMessage('���� �������')
+            setMessage('Роль удалена')
             load()
         } catch (e) {
             setError(e.message)
@@ -171,10 +168,10 @@ export default function TeamPage() {
         <Container sx={{ py: 6 }}>
             <Stack spacing={2}>
                 <Typography variant="h4" fontWeight={800}>
-                    �������
+                    Сотрудники
                 </Typography>
                 <Typography color="text.secondary" variant="body1">
-                    ���������� �����������. ���������� � �������� �������� ������ ��������������.
+                    Управление пользователями и ролями.
                 </Typography>
                 {message ? (
                     <Alert severity="success" onClose={() => setMessage('')}>
@@ -203,137 +200,176 @@ export default function TeamPage() {
                                     }}
                                 >
                                     <Box>
-                                        <Typography variant="subtitle1" fontWeight={700}>
-                                            {p.name}
-                                        </Typography>
-                                        <Typography variant="body2" color="text.secondary">
-                                            {p.email} � {p.role}
-                                        </Typography>
+                                        <Typography fontWeight={700}>{p.name}</Typography>
+                                        <Typography color="text.secondary">{p.email} · {p.role}</Typography>
                                     </Box>
-                                    <Stack direction="row" spacing={1} alignItems="center">
-                                        {(user?.role === 'admin' || p.id === user?.id) && (
-                                            <Button
-                                                size="small"
-                                                onClick={() =>
-                                                    setEditUser({
-                                                        id: p.id,
-                                                        name: p.name,
-                                                        email: p.email,
-                                                        role: p.role,
-                                                    })
-                                                }
-                                            >
-                                                �������������
+                                    {(isAdmin || p.id === user?.id) && (
+                                        <Stack direction="row" spacing={1}>
+                                            <Button size="small" variant="outlined" onClick={() => setEditUser(p)}>
+                                                Редактировать
                                             </Button>
-                                        )}
-                                        {user?.role === 'admin' && p.email !== 'admin@local' ? (
-                                            <Button size="small" color="error" onClick={() => handleDelete(p.id)}>
-                                                �������
-                                            </Button>
-                                        ) : null}
-                                    </Stack>
+                                            {isAdmin && p.email !== 'admin@local' ? (
+                                                <Button size="small" color="error" onClick={() => handleDelete(p.id)}>
+                                                    Удалить
+                                                </Button>
+                                            ) : null}
+                                        </Stack>
+                                    )}
                                 </CardContent>
                             </Card>
                         ))}
                         {!people.length ? (
-                            <Card variant="outlined">
-                                <CardContent>
-                                    <Typography color="text.secondary">���������� �� �������</Typography>
-                                </CardContent>
-                            </Card>
+                            <Typography color="text.secondary">Нет пользователей</Typography>
                         ) : null}
                     </Stack>
                 </Grid>
 
                 <Grid item xs={12} md={5}>
-                    <Card variant="outlined">
-                        <CardContent>
-                            <Typography variant="subtitle1" fontWeight={700}>
-                                �������� ����������
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                ������� ���, email � ������. ������ ������ ���� �� ������ 6 ��������.
-                            </Typography>
-                            <Divider sx={{ mb: 2 }} />
-                            <Box
-                                component="form"
-                                onSubmit={handleSubmit}
-                                sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}
-                            >
-                                <TextField
-                                    label="���"
-                                    value={form.name}
-                                    onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                                    error={formErrors.name}
-                                    helperText={formErrors.name ? '��� �����������' : ''}
-                                    size="small"
-                                    fullWidth
-                                />
-                                <TextField
-                                    label="Email"
-                                    value={form.email}
-                                    onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))}
-                                    error={formErrors.email}
-                                    helperText={formErrors.email ? '�������� email' : ''}
-                                    size="small"
-                                    fullWidth
-                                />
-                                <TextField
-                                    label="������"
-                                    type="password"
-                                    value={form.password}
-                                    onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
-                                    error={formErrors.password}
-                                    helperText={formErrors.password ? '������� 6 ��������' : ''}
-                                    size="small"
-                                    fullWidth
-                                />
-                                <TextField
-                                    select
-                                    label="����"
-                                    size="small"
-                                    value={form.role || '�����������'}
-                                    onChange={(e) => setForm((prev) => ({ ...prev, role: e.target.value }))}
-                                >
-                                    {roles.map((r) => (
-                                        <MenuItem key={r.id} value={r.name}>
-                                            {r.name} {r.is_admin ? '(�����)' : ''}
-                                        </MenuItem>
-                                    ))}
-                                </TextField>
-                                <Button type="submit" variant="contained" disabled={user?.role !== 'admin'}>
-                                    {user?.role === 'admin' ? '��������' : '������ �����'}
-                                </Button>
-                            </Box>
-                        </CardContent>
-                    </Card>
-                    {user?.role === 'admin' ? (
-                        <Card variant="outlined" sx={{ mt: 2 }}>
+                    <Stack spacing={2}>
+                        <Card variant="outlined">
                             <CardContent>
-                                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                    <Typography variant="subtitle1" fontWeight={700}>
-                                        ���������� ������
-                                    </Typography>
-                                    <Button size="small" variant="outlined" onClick={() => setRoleModal(true)}>
-                                        �������
-                                    </Button>
-                                </Stack>
-                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                    ����������, ������������ � �������� ����. ����������� �� ��� �������� � ������
-                                    �������������.
+                                <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                                    Создать пользователя
                                 </Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                    Заполните имя, email и пароль. Пароль минимум 6 символов.
+                                </Typography>
+                                <Box component="form" onSubmit={handleSubmit}>
+                                    <TextField
+                                        label="Имя"
+                                        fullWidth
+                                        sx={{ mb: 1 }}
+                                        value={form.name}
+                                        onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                                        error={formErrors.name}
+                                        helperText={formErrors.name ? 'Имя обязательно' : ''}
+                                        disabled={!isAdmin}
+                                    />
+                                    <TextField
+                                        label="Email"
+                                        fullWidth
+                                        sx={{ mb: 1 }}
+                                        value={form.email}
+                                        onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))}
+                                        error={formErrors.email}
+                                        helperText={formErrors.email ? 'Введите корректный email' : ''}
+                                        disabled={!isAdmin}
+                                    />
+                                    <TextField
+                                        label="Пароль"
+                                        type="password"
+                                        fullWidth
+                                        sx={{ mb: 1 }}
+                                        value={form.password}
+                                        onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
+                                        error={formErrors.password}
+                                        helperText={formErrors.password ? 'Минимум 6 символов' : ''}
+                                        disabled={!isAdmin}
+                                    />
+                                    <TextField
+                                        select
+                                        label="Роль"
+                                        fullWidth
+                                        sx={{ mb: 1 }}
+                                        value={form.role}
+                                        onChange={(e) => setForm((prev) => ({ ...prev, role: e.target.value }))}
+                                        disabled={!isAdmin}
+                                    >
+                                        {roles.map((r) => (
+                                            <MenuItem key={r.id} value={r.name}>
+                                                {r.name} {r.is_admin ? '(админ)' : ''}
+                                            </MenuItem>
+                                        ))}
+                                    </TextField>
+                                    <Button type="submit" variant="contained" fullWidth disabled={!isAdmin}>
+                                        Создать
+                                    </Button>
+                                </Box>
                             </CardContent>
                         </Card>
-                    ) : null}
+
+                        {isAdmin ? (
+                            <Card variant="outlined">
+                                <CardContent>
+                                    <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                                        Роли
+                                    </Typography>
+                                    <Divider sx={{ mb: 1 }} />
+                                    <Stack spacing={1}>
+                                        {roles.map((r) => (
+                                            <Stack key={r.id} spacing={1} direction="row" alignItems="center">
+                                                <TextField
+                                                    size="small"
+                                                    value={roleEdits[r.id] ?? r.name}
+                                                    onChange={(e) =>
+                                                        setRoleEdits((prev) => ({ ...prev, [r.id]: e.target.value }))
+                                                    }
+                                                    sx={{ flex: 1 }}
+                                                />
+                                                <TextField
+                                                    size="small"
+                                                    select
+                                                    value={(roleEdits[`${r.id}-admin`] ?? r.is_admin) ? 'true' : 'false'}
+                                                    onChange={(e) =>
+                                                        setRoleEdits((prev) => ({
+                                                            ...prev,
+                                                            [`${r.id}-admin`]: e.target.value === 'true',
+                                                        }))
+                                                    }
+                                                    sx={{ width: 120 }}
+                                                >
+                                                    <MenuItem value="false">Нет</MenuItem>
+                                                    <MenuItem value="true">Да</MenuItem>
+                                                </TextField>
+                                                <Button size="small" variant="outlined" onClick={() => handleUpdateRole(r.id)}>
+                                                    Сохранить
+                                                </Button>
+                                                <Button size="small" color="error" onClick={() => handleDeleteRole(r.id)}>
+                                                    Удалить
+                                                </Button>
+                                            </Stack>
+                                        ))}
+                                    </Stack>
+                                    <Divider sx={{ my: 1 }} />
+                                    <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                                        Новая роль
+                                    </Typography>
+                                    <Stack direction="row" spacing={1} alignItems="center">
+                                        <TextField
+                                            size="small"
+                                            label="Название"
+                                            value={newRole}
+                                            onChange={(e) => setNewRole(e.target.value)}
+                                            sx={{ flex: 1 }}
+                                        />
+                                        <TextField
+                                            size="small"
+                                            select
+                                            label="Админ"
+                                            value={newRoleAdmin ? 'true' : 'false'}
+                                            onChange={(e) => setNewRoleAdmin(e.target.value === 'true')}
+                                            sx={{ width: 120 }}
+                                        >
+                                            <MenuItem value="false">Нет</MenuItem>
+                                            <MenuItem value="true">Да</MenuItem>
+                                        </TextField>
+                                        <Button variant="contained" onClick={handleCreateRole}>
+                                            Добавить
+                                        </Button>
+                                    </Stack>
+                                </CardContent>
+                            </Card>
+                        ) : null}
+                    </Stack>
                 </Grid>
             </Grid>
 
             <Dialog open={Boolean(editUser)} onClose={() => setEditUser(null)} fullWidth maxWidth="sm">
-                <DialogTitle>������������� ������������</DialogTitle>
-                <DialogContent dividers>
+                <DialogTitle>Редактировать пользователя</DialogTitle>
+                <DialogContent sx={{ pt: 1 }}>
                     <Stack spacing={2} sx={{ mt: 1 }}>
                         <TextField
-                            label="���"
+                            label="Имя"
                             value={editUser?.name || ''}
                             onChange={(e) => setEditUser((prev) => ({ ...prev, name: e.target.value }))}
                             fullWidth
@@ -345,23 +381,23 @@ export default function TeamPage() {
                             fullWidth
                         />
                         <TextField
-                            label="����� ������"
+                            label="Пароль (оставьте пустым, если не менять)"
                             type="password"
                             value={editUser?.password || ''}
                             onChange={(e) => setEditUser((prev) => ({ ...prev, password: e.target.value }))}
                             fullWidth
                         />
-                        {user?.role === 'admin' && editUser?.id !== user?.id ? (
+                        {isAdmin && editUser?.id !== user?.id ? (
                             <TextField
                                 select
-                                label="����"
-                                value={editUser?.role || '�����������'}
+                                label="Роль"
+                                value={editUser?.role || 'гость'}
                                 onChange={(e) => setEditUser((prev) => ({ ...prev, role: e.target.value }))}
                                 fullWidth
                             >
                                 {roles.map((r) => (
                                     <MenuItem key={r.id} value={r.name}>
-                                        {r.name}
+                                        {r.name} {r.is_admin ? '(админ)' : ''}
                                     </MenuItem>
                                 ))}
                             </TextField>
@@ -369,130 +405,52 @@ export default function TeamPage() {
                     </Stack>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setEditUser(null)}>������</Button>
+                    <Button onClick={() => setEditUser(null)}>Отмена</Button>
                     <Button
                         variant="contained"
                         onClick={() =>
                             handleSaveUser({
                                 name: editUser?.name,
                                 email: editUser?.email,
-                                password: editUser?.password,
+                                password: editUser?.password || undefined,
                                 role: editUser?.role,
                             })
                         }
                     >
-                        ���������
+                        Сохранить
                     </Button>
                 </DialogActions>
             </Dialog>
 
-            {user?.role === 'admin' ? (
-                <Dialog open={roleModal} onClose={() => setRoleModal(false)} fullWidth maxWidth="md">
-                    <DialogTitle>����</DialogTitle>
-                    <DialogContent dividers>
-                        <Stack spacing={2}>
-                            {roles.map((r) => (
-                                <Stack
-                                    key={r.id}
-                                    direction="row"
-                                    spacing={1}
-                                    alignItems="center"
-                                    sx={{ width: '100%' }}
-                                >
-                                    <TextField
-                                        size="small"
-                                        label="��������"
-                                        value={roleEdits[r.id] ?? r.name}
-                                        onChange={(e) =>
-                                            setRoleEdits((prev) => ({ ...prev, [r.id]: e.target.value }))
-                                        }
-                                        fullWidth
-                                    />
-                                    <TextField
-                                        select
-                                        size="small"
-                                        label="�����-�����"
-                                        value={(roleEdits[`${r.id}-admin`] ?? r.is_admin) ? 'true' : 'false'}
-                                        onChange={(e) =>
-                                            setRoleEdits((prev) => ({
-                                                ...prev,
-                                                [`${r.id}-admin`]: e.target.value === 'true',
-                                            }))
-                                        }
-                                        sx={{ minWidth: 140 }}
-                                        disabled={r.name === 'admin'}
-                                    >
-                                        <MenuItem value="false">���</MenuItem>
-                                        <MenuItem value="true">��</MenuItem>
-                                    </TextField>
-                                    <Button
-                                        size="small"
-                                        variant="contained"
-                                        onClick={() =>
-                                            handleUpdateRole(r.id, {
-                                                name: roleEdits[r.id] ?? r.name,
-                                                is_admin:
-                                                    roleEdits[`${r.id}-admin`] !== undefined
-                                                        ? roleEdits[`${r.id}-admin`]
-                                                        : r.is_admin,
-                                            })
-                                        }
-                                        sx={{ whiteSpace: 'nowrap' }}
-                                        disabled={r.name === 'admin'}
-                                    >
-                                        ���������
-                                    </Button>
-                                    <Button
-                                        size="small"
-                                        color="error"
-                                        onClick={() => handleDeleteRole(r.id)}
-                                        disabled={r.name === 'admin'}
-                                        sx={{ whiteSpace: 'nowrap' }}
-                                    >
-                                        �������
-                                    </Button>
-                                </Stack>
-                            ))}
-                            <Divider />
-                            <Box component="form" onSubmit={handleCreateRole} sx={{ display: 'flex', gap: 1 }}>
-                                <TextField
-                                    size="small"
-                                    label="����� ����"
-                                    value={newRole}
-                                    onChange={(e) => setNewRole(e.target.value)}
-                                    fullWidth
-                                />
-                                <TextField
-                                    select
-                                    size="small"
-                                    label="�����-�����"
-                                    value={roleEdits.newAdmin ? 'true' : 'false'}
-                                    onChange={(e) =>
-                                        setRoleEdits((prev) => ({
-                                            ...prev,
-                                            newAdmin: e.target.value === 'true',
-                                        }))
-                                    }
-                                    sx={{ minWidth: 140 }}
-                                >
-                                    <MenuItem value="false">���</MenuItem>
-                                    <MenuItem value="true">��</MenuItem>
-                                </TextField>
-                                <Button type="submit" variant="contained">
-                                    ��������
-                                </Button>
-                            </Box>
-                        </Stack>
-                    </DialogContent>
-                    <DialogActions>
-                        <Button onClick={() => setRoleModal(false)}>�������</Button>
-                    </DialogActions>
-                </Dialog>
-            ) : null}
+            <Dialog open={roleModal} onClose={() => setRoleModal(false)} fullWidth maxWidth="sm">
+                <DialogTitle>Создать роль</DialogTitle>
+                <DialogContent>
+                    <Stack spacing={2} sx={{ mt: 1 }}>
+                        <TextField
+                            label="Название"
+                            value={newRole}
+                            onChange={(e) => setNewRole(e.target.value)}
+                            fullWidth
+                        />
+                        <TextField
+                            select
+                            label="Админ"
+                            value={newRoleAdmin ? 'true' : 'false'}
+                            onChange={(e) => setNewRoleAdmin(e.target.value === 'true')}
+                            fullWidth
+                        >
+                            <MenuItem value="false">Нет</MenuItem>
+                            <MenuItem value="true">Да</MenuItem>
+                        </TextField>
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setRoleModal(false)}>Отмена</Button>
+                    <Button variant="contained" onClick={handleCreateRole}>
+                        Создать
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Container>
     )
 }
-
-
-
-

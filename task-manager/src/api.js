@@ -40,6 +40,10 @@ export function createProject(token, payload) {
     return api('/refs/projects', { method: 'POST', token, body: payload })
 }
 
+export function updateProject(token, id, payload) {
+    return api(`/refs/projects/${id}`, { method: 'PATCH', token, body: payload })
+}
+
 export function listStatuses(token, params = {}) {
     const search = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => {

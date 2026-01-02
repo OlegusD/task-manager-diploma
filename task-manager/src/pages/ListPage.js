@@ -43,7 +43,6 @@ export default function ListPage() {
     const [users, setUsers] = useState([])
     const [filters, setFilters] = useState({ q: '', status_id: '', priority_id: '', assignee_id: '' })
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!token) return
         loadRefs()
@@ -58,10 +57,10 @@ export default function ListPage() {
                 listTaskTypes(token),
                 listUsers(token),
             ])
-            setStatusMap(Object.fromEntries(sts.map((s) => [s.id, s.name])))
-            setPriorityMap(Object.fromEntries(prs.map((p) => [p.id, p.name])))
-            setTypeMap(Object.fromEntries(tts.map((t) => [t.id, t.name])))
-            setUsers(us)
+            setStatusMap(Object.fromEntries((sts || []).map((s) => [s.id, s.name])))
+            setPriorityMap(Object.fromEntries((prs || []).map((p) => [p.id, p.name])))
+            setTypeMap(Object.fromEntries((tts || []).map((t) => [t.id, t.name])))
+            setUsers(us || [])
         } catch (e) {
             setError(e.message)
         }
@@ -94,7 +93,7 @@ export default function ListPage() {
     return (
         <Container sx={{ py: 4 }}>
             <Typography variant="h5" sx={{ mb: 2 }} fontWeight={800}>
-                ������ � ������
+                Список задач
             </Typography>
             {error ? (
                 <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
@@ -105,19 +104,19 @@ export default function ListPage() {
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }}>
                 <TextField
                     size="small"
-                    label="�����"
+                    label="Поиск"
                     value={filters.q}
                     onChange={(e) => setFilters((prev) => ({ ...prev, q: e.target.value }))}
                 />
                 <TextField
                     size="small"
                     select
-                    label="������"
+                    label="Статус"
                     value={filters.status_id}
                     onChange={(e) => setFilters((prev) => ({ ...prev, status_id: e.target.value }))}
                     sx={{ minWidth: 140 }}
                 >
-                    <MenuItem value="">���</MenuItem>
+                    <MenuItem value="">Все</MenuItem>
                     {Object.entries(statusMap).map(([id, name]) => (
                         <MenuItem key={id} value={id}>
                             {name}
@@ -127,12 +126,12 @@ export default function ListPage() {
                 <TextField
                     size="small"
                     select
-                    label="�����������"
+                    label="Исполнитель"
                     value={filters.assignee_id}
                     onChange={(e) => setFilters((prev) => ({ ...prev, assignee_id: e.target.value }))}
                     sx={{ minWidth: 180 }}
                 >
-                    <MenuItem value="">���</MenuItem>
+                    <MenuItem value="">Все</MenuItem>
                     {users.map((u) => (
                         <MenuItem key={u.id} value={u.id}>
                             {u.name}
@@ -142,12 +141,12 @@ export default function ListPage() {
                 <TextField
                     size="small"
                     select
-                    label="���������"
+                    label="Приоритет"
                     value={filters.priority_id}
                     onChange={(e) => setFilters((prev) => ({ ...prev, priority_id: e.target.value }))}
                     sx={{ minWidth: 160 }}
                 >
-                    <MenuItem value="">���</MenuItem>
+                    <MenuItem value="">Все</MenuItem>
                     {Object.entries(priorityMap).map(([id, name]) => (
                         <MenuItem key={id} value={id}>
                             {name}
@@ -155,19 +154,19 @@ export default function ListPage() {
                     ))}
                 </TextField>
                 <Button variant="outlined" onClick={loadData}>
-                    �����������
+                    Обновить
                 </Button>
             </Stack>
 
             <Table size="small">
                 <TableHead>
                     <TableRow>
-                        <TableCell>������</TableCell>
-                        <TableCell>������</TableCell>
-                        <TableCell>���������</TableCell>
-                        <TableCell>���</TableCell>
-                        <TableCell>�������������</TableCell>
-                        <TableCell>����</TableCell>
+                        <TableCell>Название</TableCell>
+                        <TableCell>Статус</TableCell>
+                        <TableCell>Приоритет</TableCell>
+                        <TableCell>Тип</TableCell>
+                        <TableCell>Исполнитель</TableCell>
+                        <TableCell>Дедлайн</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
@@ -193,8 +192,8 @@ export default function ListPage() {
                                     ))}
                                 </TextField>
                             </TableCell>
-                            <TableCell>{priorityMap[t.priority_id] || '�'}</TableCell>
-                            <TableCell>{typeMap[t.type_id] || '�'}</TableCell>
+                            <TableCell>{priorityMap[t.priority_id] || '—'}</TableCell>
+                            <TableCell>{typeMap[t.type_id] || '—'}</TableCell>
                             <TableCell>
                                 <TextField
                                     select
@@ -203,7 +202,7 @@ export default function ListPage() {
                                     onChange={(e) => updateInline(t.id, { assignee_id: e.target.value || null })}
                                     sx={{ minWidth: 160 }}
                                 >
-                                    <MenuItem value="">�</MenuItem>
+                                    <MenuItem value="">Не выбрано</MenuItem>
                                     {users.map((u) => (
                                         <MenuItem key={u.id} value={u.id}>
                                             {u.name}
@@ -216,7 +215,7 @@ export default function ListPage() {
                                     <Chip
                                         size="small"
                                         color={deadlineColor(t)}
-                                        label={t.due_date ? new Date(t.due_date).toLocaleDateString() : '�'}
+                                        label={t.due_date ? new Date(t.due_date).toLocaleDateString() : '—'}
                                     />
                                 </Stack>
                             </TableCell>
@@ -227,7 +226,3 @@ export default function ListPage() {
         </Container>
     )
 }
-
-
-
-
