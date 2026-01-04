@@ -18,7 +18,10 @@ import {
     DialogContent,
     DialogActions,
     Pagination,
+    IconButton,
 } from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import { useParams, Link as RouterLink } from 'react-router-dom'
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd'
 import { io } from 'socket.io-client'
@@ -39,6 +42,7 @@ import {
     addComment,
     updateComment,
     deleteCommentApi,
+    listProjectMembers,
 } from '../api'
 import { useAuth } from '../AuthContext'
 
@@ -121,6 +125,7 @@ export default function BoardPage() {
     const [priorities, setPriorities] = useState([])
     const [types, setTypes] = useState([])
     const [users, setUsers] = useState([])
+    const [projectMembers, setProjectMembers] = useState([])
     const [tasks, setTasks] = useState([])
     const [error, setError] = useState('')
     const [notif, setNotif] = useState('')
@@ -144,16 +149,23 @@ export default function BoardPage() {
     const [modalSpentUnit, setModalSpentUnit] = useState('minutes')
     const [modalEstimateValue, setModalEstimateValue] = useState(0)
     const [modalEstimateUnit, setModalEstimateUnit] = useState('minutes')
+    const availableAssignees = useMemo(
+        () => projectMembers.filter((u) => (u.role || '').toLowerCase() !== 'гость'),
+        [projectMembers]
+    )
+    const assigneeFilterOptions = projectMembers
+    const storageTrashKey = `trashTasks_${projectId || 'global'}`
+    const storageDeletedKey = `deletedStatuses_${projectId || 'global'}`
     const [trashTasks, setTrashTasks] = useState(() => {
         try {
-            return JSON.parse(localStorage.getItem('trashTasks') || '[]')
+            return JSON.parse(localStorage.getItem(storageTrashKey) || '[]')
         } catch {
             return []
         }
     })
     const [deletedStatusIds, setDeletedStatusIds] = useState(() => {
         try {
-            return JSON.parse(localStorage.getItem('deletedStatuses') || '[]')
+            return JSON.parse(localStorage.getItem(storageDeletedKey) || '[]')
         } catch {
             return []
         }
@@ -178,6 +190,17 @@ export default function BoardPage() {
 
     useEffect(() => {
         if (!token) return
+        // Перезагружаем проектные корзины при смене проекта
+        try {
+            setTrashTasks(JSON.parse(localStorage.getItem(storageTrashKey) || '[]'))
+        } catch {
+            setTrashTasks([])
+        }
+        try {
+            setDeletedStatusIds(JSON.parse(localStorage.getItem(storageDeletedKey) || '[]'))
+        } catch {
+            setDeletedStatusIds([])
+        }
         loadRefs()
         loadTasks()
     }, [token, projectId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -193,16 +216,22 @@ export default function BoardPage() {
 
     async function loadRefs() {
         try {
-            const [sts, prs, tts, us] = await Promise.all([
+            const [sts, prs, tts, us, members] = await Promise.all([
                 listStatuses(token, { project_id: projectId }),
                 listPriorities(token),
                 listTaskTypes(token),
                 listUsers(token),
+                listProjectMembers(token, projectId),
             ])
             setStatuses(sts || [])
+            // чистим список удаленных статусов, которые больше не существуют в этом проекте
+            setDeletedStatusIds((prev) =>
+                (prev || []).filter((id) => (sts || []).some((s) => String(s.id) === String(id)))
+            )
             setPriorities(prs)
             setTypes(tts)
             setUsers(us)
+            setProjectMembers(members || [])
             const today = shiftToInputDate(new Date())
             const threeDays = shiftToInputDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000))
             setForm((prev) => ({
@@ -231,26 +260,22 @@ export default function BoardPage() {
                 assignee_id: filters.assignee_id,
                 priority_id: filters.priority_id,
             })
-            const activeIds = new Set([
-                ...activeStatuses.map((s) => s.id),
-                ...deletedStatusIds,
-            ])
-            const deletedIds = new Set(trashTasks.map((t) => t.id))
+            const activeIds = new Set(activeStatuses.map((s) => String(s.id)))
+            const deletedStatusSet = new Set(deletedStatusIds.map(String))
+            const deletedTaskIds = new Set(trashTasks.map((t) => t.id))
+
             const keep = []
             const toTrash = []
             data.forEach((t) => {
-                if (deletedIds.has(t.id)) return
-                if (!activeStatuses.length) {
-                    keep.push(t)
-                    return
-                }
-                const hasActive = activeIds.has(t.status_id)
-                if (!t.status_id || !hasActive) {
+                if (deletedTaskIds.has(t.id)) return
+                const statusId = String(t.status_id || '')
+                if (deletedStatusSet.has(statusId)) {
                     toTrash.push(t)
                     return
                 }
                 keep.push(t)
             })
+
             let nextTrash = trashTasks
             if (toTrash.length) {
                 const known = new Set(trashTasks.map((t) => t.id))
@@ -275,7 +300,7 @@ export default function BoardPage() {
         setTrashTasks((prev) => {
             const value = typeof next === 'function' ? next(prev) : next || []
             try {
-                localStorage.setItem('trashTasks', JSON.stringify(value))
+                localStorage.setItem(storageTrashKey, JSON.stringify(value))
             } catch {}
             return value
         })
@@ -285,11 +310,12 @@ export default function BoardPage() {
         setDeletedStatusIds((prev) => {
             const value = typeof next === 'function' ? next(prev) : next || []
             try {
-                localStorage.setItem('deletedStatuses', JSON.stringify(value))
+                localStorage.setItem(storageDeletedKey, JSON.stringify(value))
             } catch {}
             return value
         })
     }
+    const [expandedCards, setExpandedCards] = useState(new Set())
 
     function cleanupDeletedStatuses(nextTasks = tasks, nextTrash = trashTasks) {
         const used = new Set()
@@ -381,6 +407,14 @@ export default function BoardPage() {
         return map
     }, [priorities])
 
+    const projectAssignees = useMemo(() => {
+        const ids = new Set()
+        tasks.forEach((t) => t.assignee_id && ids.add(String(t.assignee_id)))
+        trashTasks.forEach((t) => t.assignee_id && ids.add(String(t.assignee_id)))
+        const list = users.filter((u) => ids.has(String(u.id)))
+        return list.length ? list : users
+    }, [tasks, trashTasks, users])
+
     const sortedTasks = useMemo(() => {
         const comparator = {
             status: (a, b) => (a.status_name || '').localeCompare(b.status_name || ''),
@@ -466,6 +500,10 @@ export default function BoardPage() {
     async function handleSubmit(e) {
         e?.preventDefault()
         if (!form.title) return
+        if (!editingId && !isAdmin) {
+            setError('Создавать задачи может только администратор')
+            return
+        }
         try {
             const normalizeDate = (d) => toApiDate(d)
             const spent = toMinutes(form.spent_value, form.spent_unit)
@@ -534,12 +572,16 @@ export default function BoardPage() {
 
         if (destId === 'trash') {
             if (sourceId === 'trash') return
-            if (taskFromBoard) moveTaskToTrash(taskId)
+            if (taskFromBoard) {
+                if (!canManageTask(taskFromBoard)) return
+                moveTaskToTrash(taskId)
+            }
             return
         }
 
         if (sourceId === 'trash' && destId !== 'trash') {
             if (!taskFromTrash) return
+            if (!canManageTask(taskFromTrash)) return
             const targetStatus = statusOptions.find((s) => String(s.id) === String(destId))
             const newStatus = targetStatus ? targetStatus.id : destId
             const statusName = targetStatus?.name
@@ -582,11 +624,15 @@ export default function BoardPage() {
         const newStatus = targetStatus ? targetStatus.id : destId
         const task = taskFromBoard
         if (!task || task.status_id === newStatus) return
+        if (!canManageTask(task)) return
         await handleStatusChange(taskId, newStatus)
     }
 
     async function handleCreateColumn(e) {
-        if (isGuest) return
+        if (!isAdmin) {
+            setError('Создавать колонки может только администратор')
+            return
+        }
         e.preventDefault()
         if (!columnDraft.trim()) return
         const nameExists = activeStatuses.some(
@@ -662,7 +708,7 @@ export default function BoardPage() {
     }
 
     async function handleAddModalComment(e) {
-        if (isGuest) return
+        if (isGuest || !canEditModal) return
         e.preventDefault()
         if (!modalTask || !modalComment.trim()) return
         try {
@@ -721,6 +767,11 @@ export default function BoardPage() {
             setError(e.message)
         }
     }
+    const canEditModal = modalTask
+        ? isAdmin || modalTask.task.assignee_id === user?.id
+        : false
+    const canManageTask = (task) => isAdmin || (!isGuest && task?.assignee_id === user?.id)
+
     return (
         <Container sx={{ py: 4 }}>
             <Typography variant="h5" sx={{ mb: 2 }} fontWeight={800}>
@@ -746,10 +797,9 @@ export default function BoardPage() {
                     value={filters.assignee_id}
                     onChange={(e) => setFilters((prev) => ({ ...prev, assignee_id: e.target.value }))}
                     sx={{ minWidth: 180 }}
-                    disabled={!isAdmin}
                 >
                     <MenuItem value="">Все</MenuItem>
-                    {users.map((u) => (
+                    {assigneeFilterOptions.map((u) => (
                         <MenuItem key={u.id} value={u.id}>
                             {u.name}
                         </MenuItem>
@@ -781,7 +831,6 @@ export default function BoardPage() {
                     sx={{ minWidth: 160 }}
                 >
                     <MenuItem value="">Нет</MenuItem>
-                    <MenuItem value="status">Статус</MenuItem>
                     <MenuItem value="assignee">Исполнитель</MenuItem>
                     <MenuItem value="priority">Приоритет</MenuItem>
                     <MenuItem value="due">Дедлайн</MenuItem>
@@ -791,7 +840,7 @@ export default function BoardPage() {
                 <Button variant="outlined" onClick={loadTasks}>
                     Обновить
                 </Button>
-                <Button variant="contained" onClick={() => setTaskModalOpen(true)} disabled={isGuest}>
+                <Button variant="contained" onClick={() => setTaskModalOpen(true)} disabled={!isAdmin}>
                     Создать задачу
                 </Button>
             </Stack>
@@ -824,8 +873,14 @@ export default function BoardPage() {
                         label="Название"
                         value={columnDraft}
                         onChange={(e) => setColumnDraft(e.target.value)}
+                        disabled={!isAdmin}
                     />
-                    <Button type="submit" variant="contained" sx={{ mt: 1 }} disabled={isGuest}>
+                    <Button
+                        type="submit"
+                        variant="contained"
+                        sx={{ mt: 1 }}
+                        disabled={!isAdmin || !columnDraft.trim()}
+                    >
                         Добавить
                     </Button>
                 </Box>
@@ -889,12 +944,12 @@ export default function BoardPage() {
                                                                 }}
                                                             >
                                                                 {colTasks.map((t, idx) => (
-                                                                    <Draggable
-                                                                        key={t.id}
-                                                                        draggableId={String(t.id)}
-                                                                        index={idx}
-                                                                        isDragDisabled={isGuest}
-                                                                    >
+                                                                        <Draggable
+                                                                            key={t.id}
+                                                                            draggableId={String(t.id)}
+                                                                            index={idx}
+                                                                            isDragDisabled={!canManageTask(t)}
+                                                                        >
                                                                         {(dragProps) => (
                                                                             <Card
                                                                                 ref={dragProps.innerRef}
@@ -909,62 +964,86 @@ export default function BoardPage() {
                                                                                 onClick={() => openModal(t.id)}
                                                                             >
                                                                                 <CardContent sx={{ p: 1.25 }}>
-                                                                                    <Typography variant="body2" fontWeight={700}>
-                                                                                        {t.title}
-                                                                                    </Typography>
-                                                                                    {t.parent_id ? (
-                                                                                        <Button
-                                                                                            component={RouterLink}
-                                                                                            to={`/tasks/${t.parent_id}`}
+                                                                                    <Stack direction="row" alignItems="center" justifyContent="space-between">
+                                                                                        <Box sx={{ flex: 1, pr: 1 }}>
+                                                                                            <Typography variant="body2" fontWeight={700}>
+                                                                                                {t.title}
+                                                                                            </Typography>
+                                                                                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                                                                {t.description || 'Нет описания'}
+                                                                                            </Typography>
+                                                                                        </Box>
+                                                                                        <IconButton
                                                                                             size="small"
-                                                                                            variant="text"
-                                                                                            onClick={(e) => e.stopPropagation()}
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation()
+                                                                                                setExpandedCards((prev) => {
+                                                                                                    const next = new Set(prev)
+                                                                                                    const key = String(t.id)
+                                                                                                    if (next.has(key)) next.delete(key)
+                                                                                                    else next.add(key)
+                                                                                                    return next
+                                                                                                })
+                                                                                            }}
                                                                                         >
-                                                                                            Родительская задача
-                                                                                        </Button>
+                                                                                            {expandedCards.has(String(t.id)) ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                                                                                        </IconButton>
+                                                                                    </Stack>
+
+                                                                                    {expandedCards.has(String(t.id)) ? (
+                                                                                        <>
+                                                                                            {t.parent_id ? (
+                                                                                                <Button
+                                                                                                    component={RouterLink}
+                                                                                                    to={`/tasks/${t.parent_id}`}
+                                                                                                    size="small"
+                                                                                                    variant="text"
+                                                                                                    onClick={(e) => e.stopPropagation()}
+                                                                                                >
+                                                                                                    Родительская задача
+                                                                                                </Button>
+                                                                                            ) : null}
+                                                                                            <Divider sx={{ my: 1 }} />
+                                                                                            <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
+                                                                                                <Chip label={`Приоритет: ${t.priority_name || '-'}`} size="small" />
+                                                                                                <Chip label={`Тип: ${t.type_name || '-'}`} size="small" color="info" />
+                                                                                                <Chip label={`Затрачено: ${formatSpent(t.spent_minutes)}`} size="small" color={spentColor(t.spent_minutes, t.estimated_minutes)} />
+                                                                                                <Chip label={`Оценка: ${formatSpent(t.estimated_minutes)}`} size="small" />
+                                                                                                {t.assignee_name ? (
+                                                                                                    <Chip label={`Исп: ${t.assignee_name}`} size="small" />
+                                                                                                ) : null}
+                                                                                            </Stack>
+                                                                                            <Typography variant="caption" sx={{ display: 'block', mt: 0.5, color: 'text.secondary' }}>
+                                                                                                С {formatDate(t.start_date)} до {formatDate(t.due_date)}
+                                                                                            </Typography>
+                                                                                            <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                                                                                                {(isAdmin || (!isGuest && t.assignee_id === user?.id)) && (
+                                                                                                    <TextField
+                                                                                                        select
+                                                                                                        size="small"
+                                                                                                        value={t.status_id}
+                                                                                                        onChange={(e) => {
+                                                                                                            e.stopPropagation()
+                                                                                                            handleStatusChange(t.id, Number(e.target.value))
+                                                                                                        }}
+                                                                                                        sx={{ minWidth: 140 }}
+                                                                                                    >
+                                                                                                        {statusOptions.map((s) => (
+                                                                                                            <MenuItem key={s.id} value={s.id}>
+                                                                                                                {s.name}
+                                                                                                            </MenuItem>
+                                                                                                        ))}
+                                                                                                    </TextField>
+                                                                                                )}
+                                                                                                {isAdmin ? (
+                                                                                                    <>
+                                                                                                        <Button size="small" onClick={(e) => { e.stopPropagation(); startEdit(t); }}>Править</Button>
+                                                                                                        <Button size="small" color="error" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Удалить</Button>
+                                                                                                    </>
+                                                                                                ) : null}
+                                                                                            </Stack>
+                                                                                        </>
                                                                                     ) : null}
-                                                                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                                                                        {t.description || 'Нет описания'}
-                                                                                    </Typography>
-                                                                                    <Divider sx={{ my: 1 }} />
-                                                                                    <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
-                                                                                        <Chip label={`Приоритет: ${t.priority_name || '—'}`} size="small" />
-                                                                                        <Chip label={`Тип: ${t.type_name || '—'}`} size="small" color="info" />
-                                                                                        <Chip label={`Затрачено: ${formatSpent(t.spent_minutes)}`} size="small" color={spentColor(t.spent_minutes, t.estimated_minutes)} />
-                                                                                        <Chip label={`Оценка: ${formatSpent(t.estimated_minutes)}`} size="small" />
-                                                                                        {t.assignee_name ? (
-                                                                                            <Chip label={`Исп: ${t.assignee_name}`} size="small" />
-                                                                                        ) : null}
-                                                                                    </Stack>
-                                                                                    <Typography variant="caption" sx={{ display: 'block', mt: 0.5, color: 'text.secondary' }}>
-                                                                                        С {formatDate(t.start_date)} до {formatDate(t.due_date)}
-                                                                                    </Typography>
-                                                                                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                                                                                        {(isAdmin || (!isGuest && t.assignee_id === user?.id)) && (
-                                                                                            <TextField
-                                                                                                select
-                                                                                                size="small"
-                                                                                                value={t.status_id}
-                                                                                                onChange={(e) => {
-                                                                                                    e.stopPropagation()
-                                                                                                    handleStatusChange(t.id, Number(e.target.value))
-                                                                                                }}
-                                                                                                sx={{ minWidth: 140 }}
-                                                                                            >
-                                                                                                {statusOptions.map((s) => (
-                                                                                                    <MenuItem key={s.id} value={s.id}>
-                                                                                                        {s.name}
-                                                                                                    </MenuItem>
-                                                                                                ))}
-                                                                                            </TextField>
-                                                                                        )}
-                                                                                        {isAdmin ? (
-                                                                                            <>
-                                                                                                <Button size="small" onClick={(e) => { e.stopPropagation(); startEdit(t); }}>Править</Button>
-                                                                                                <Button size="small" color="error" onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}>Удалить</Button>
-                                                                                            </>
-                                                                                        ) : null}
-                                                                                    </Stack>
                                                                                 </CardContent>
                                                                             </Card>
                                                                         )}
@@ -1069,7 +1148,7 @@ export default function BoardPage() {
                                                             </Stack>
                                                         </Stack>
                                                         {colTasks.map((t, idx) => (
-                                                            <Draggable key={t.id} draggableId={String(t.id)} index={idx} isDragDisabled={isGuest}>
+                                            <Draggable key={t.id} draggableId={String(t.id)} index={idx} isDragDisabled={!canManageTask(t)}>
                                                                 {(dragProps) => (
                                                                     <Card
                                                                         ref={dragProps.innerRef}
@@ -1150,7 +1229,7 @@ export default function BoardPage() {
                                                 key={t.id}
                                                 draggableId={String(t.id)}
                                                 index={idx}
-                                                isDragDisabled={isGuest}
+                                                isDragDisabled={!canManageTask(t)}
                                             >
                                                 {(dragProps) => (
                                                     <Card
@@ -1224,6 +1303,7 @@ export default function BoardPage() {
                                             task: { ...prev.task, title: e.target.value },
                                         }))
                                     }
+                                    disabled={!canEditModal}
                                 />
                                 <TextField
                                     label="Описание"
@@ -1237,6 +1317,7 @@ export default function BoardPage() {
                                             task: { ...prev.task, description: e.target.value },
                                         }))
                                     }
+                                    disabled={!canEditModal}
                                 />
                                 <Stack direction="row" spacing={1} flexWrap="wrap" rowGap={1}>
                                     <TextField
@@ -1254,11 +1335,7 @@ export default function BoardPage() {
                                         }
                                         size="small"
                                         sx={{ minWidth: 160 }}
-                                        disabled={
-                                            !isAdmin &&
-                                            modalTask.task.assignee_id &&
-                                            modalTask.task.assignee_id !== user?.id
-                                        }
+                                        disabled={!canEditModal}
                                     >
                                         {statusOptions.map((s) => (
                                             <MenuItem key={s.id} value={s.id}>
@@ -1281,11 +1358,7 @@ export default function BoardPage() {
                                         }
                                         size="small"
                                         sx={{ minWidth: 140 }}
-                                        disabled={
-                                            !isAdmin &&
-                                            modalTask.task.assignee_id &&
-                                            modalTask.task.assignee_id !== user?.id
-                                        }
+                                        disabled={!canEditModal}
                                     >
                                         {priorities.map((p) => (
                                             <MenuItem key={p.id} value={p.id}>
@@ -1310,11 +1383,7 @@ export default function BoardPage() {
                                         }
                                         size="small"
                                         sx={{ minWidth: 140 }}
-                                        disabled={
-                                            !isAdmin &&
-                                            modalTask.task.assignee_id &&
-                                            modalTask.task.assignee_id !== user?.id
-                                        }
+                                        disabled={!canEditModal}
                                     >
                                         <MenuItem value="">-</MenuItem>
                                         {types.map((t) => (
@@ -1341,7 +1410,7 @@ export default function BoardPage() {
                                         disabled={!isAdmin}
                                     >
                                         <MenuItem value="">Не выбрано</MenuItem>
-                                        {users.map((u) => (
+                                        {availableAssignees.map((u) => (
                                             <MenuItem key={u.id} value={u.id}>
                                                 {u.name}
                                             </MenuItem>
@@ -1367,8 +1436,8 @@ export default function BoardPage() {
                                         InputProps={{ inputProps: { min: 0, step: 1 } }}
                                         disabled={
                                             !isAdmin &&
-                                            modalTask.task.assignee_id &&
-                                            modalTask.task.assignee_id !== user?.id
+                                            (!modalTask.task.assignee_id ||
+                                                modalTask.task.assignee_id !== user?.id)
                                         }
                                     />
                                     <TextField
@@ -1378,11 +1447,7 @@ export default function BoardPage() {
                                         value={modalSpentUnit}
                                         onChange={(e) => setModalSpentUnit(e.target.value)}
                                         sx={{ minWidth: 160 }}
-                                        disabled={
-                                            !isAdmin &&
-                                            modalTask.task.assignee_id &&
-                                            modalTask.task.assignee_id !== user?.id
-                                        }
+                                        disabled={!canEditModal}
                                     >
                                         {timeUnits.map((u) => (
                                             <MenuItem key={u.key} value={u.key}>
@@ -1567,8 +1632,9 @@ export default function BoardPage() {
                                             label="Новый комментарий"
                                             value={modalComment}
                                             onChange={(e) => setModalComment(e.target.value)}
+                                            disabled={isGuest || !canEditModal}
                                         />
-                                        <Button type="submit" variant="outlined">
+                                        <Button type="submit" variant="outlined" disabled={isGuest || !canEditModal}>
                                             Добавить
                                         </Button>
                                     </Box>
@@ -1623,36 +1689,31 @@ export default function BoardPage() {
                         </DialogContent>
                         <DialogActions>
                             <Button onClick={() => setModalOpen(false)}>Закрыть</Button>
-                            <Button
-                                variant="contained"
-                                disabled={
-                                    isGuest ||
-                                    (!isAdmin &&
-                                        modalTask.task.assignee_id &&
-                                        modalTask.task.assignee_id !== user?.id)
-                                }
-                                onClick={() =>
-                                    saveModal({
-                                        title: modalTask.task.title,
-                                        description: modalTask.task.description,
-                                        status_id: modalTask.task.status_id,
-                                        priority_id: modalTask.task.priority_id,
-                                        type_id: modalTask.task.type_id,
-                                        assignee_id: isAdmin ? modalTask.task.assignee_id : undefined,
-                                        start_date: toApiDate(
-                                            shiftToInputDate(modalTask.task.start_date)
-                                        ),
-                                        due_date: toApiDate(
-                                            shiftToInputDate(modalTask.task.due_date)
-                                        ),
-                                        spent_minutes: toMinutes(modalSpentValue, modalSpentUnit),
-                                        estimated_minutes: toMinutes(
-                                            modalEstimateValue,
-                                            modalEstimateUnit
-                                        ),
-                                    })
-                                }
-                            >
+                    <Button
+                        variant="contained"
+                        disabled={!canEditModal}
+                        onClick={() =>
+                            saveModal({
+                                title: modalTask.task.title,
+                                description: modalTask.task.description,
+                                status_id: modalTask.task.status_id,
+                                priority_id: modalTask.task.priority_id,
+                                type_id: modalTask.task.type_id,
+                                assignee_id: modalTask.task.assignee_id,
+                                start_date: toApiDate(
+                                    shiftToInputDate(modalTask.task.start_date)
+                                ),
+                                due_date: toApiDate(
+                                    shiftToInputDate(modalTask.task.due_date)
+                                ),
+                                spent_minutes: toMinutes(modalSpentValue, modalSpentUnit),
+                                estimated_minutes: toMinutes(
+                                    modalEstimateValue,
+                                    modalEstimateUnit
+                                ),
+                            })
+                        }
+                    >
                                 Сохранить
                             </Button>
                         </DialogActions>
@@ -1759,12 +1820,12 @@ export default function BoardPage() {
                                 }
                                 size="small"
                                 sx={{ minWidth: 200 }}
-                            disabled={!isAdmin}
+                                disabled={!isAdmin}
                             >
-                            <MenuItem value="">Не выбрано</MenuItem>
-                            {users.map((u) => (
-                                <MenuItem key={u.id} value={u.id}>
-                                    {u.name}
+                                <MenuItem value="">Не выбрано</MenuItem>
+                                {availableAssignees.map((u) => (
+                                    <MenuItem key={u.id} value={u.id}>
+                                        {u.name}
                                     </MenuItem>
                                 ))}
                             </TextField>

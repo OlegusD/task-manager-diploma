@@ -19,19 +19,29 @@ import {
 } from '@mui/material'
 import { Link as RouterLink } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
-import { listProjects, createProject, updateProject, deleteProject, listUsers, listTasks } from '../api'
+import {
+    listProjects,
+    createProject,
+    updateProject,
+    deleteProject,
+    listUsers,
+    listTasks,
+    listProjectMembers,
+} from '../api'
 
 export default function DashboardPage() {
     const { token, user } = useAuth()
     const isAdmin = user?.role === 'admin'
+    const isGuest = user?.role === 'гость'
     const [projects, setProjects] = useState([])
     const [people, setPeople] = useState([])
     const [projectAssignees, setProjectAssignees] = useState({})
+    const [projectMembers, setProjectMembers] = useState({})
     const [newProject, setNewProject] = useState({ name: '', description: '', member_ids: [] })
     const [editProject, setEditProject] = useState(null)
     const [message, setMessage] = useState('')
     const [error, setError] = useState('')
-    const [projectModal, setProjectModal] = useState(false)
+    const [createOpen, setCreateOpen] = useState(false)
 
     useEffect(() => {
         if (!token) return
@@ -45,8 +55,27 @@ export default function DashboardPage() {
                 listUsers(token),
                 listTasks(token, {}),
             ])
-            setProjects(pr || [])
+
+            const membersMap = {}
+            await Promise.all(
+                (pr || []).map(async (p) => {
+                    try {
+                        membersMap[p.id] = (await listProjectMembers(token, p.id)) || []
+                    } catch {
+                        membersMap[p.id] = []
+                    }
+                })
+            )
+
+            const projectsWithMembers = (pr || []).map((p) => ({
+                ...p,
+                member_ids: (membersMap[p.id] || []).map((m) => m.id),
+            }))
+
+            setProjects(projectsWithMembers)
             setPeople(staff || [])
+            setProjectMembers(membersMap)
+
             const byProject = {}
             taskList?.forEach((t) => {
                 if (!t.project_id || !t.assignee_id) return
@@ -64,38 +93,38 @@ export default function DashboardPage() {
         }
     }
 
-    function memberIdsOf(project) {
-        return (
-            project?.member_ids ||
-            project?.members?.map((m) => m.id) ||
-            []
-        ).map((id) => String(id))
-    }
-
     function participantsFor(project) {
-        const base = new Set(memberIdsOf(project))
+        const base = new Set((projectMembers[project.id] || []).map((m) => String(m.id)))
         const fromTasks = projectAssignees[String(project.id)] || []
         fromTasks.forEach((id) => base.add(String(id)))
         return Array.from(base)
     }
 
     const visibleProjects = useMemo(() => {
-        if (isAdmin) return projects
+        if (isAdmin || isGuest) return projects
         return projects.filter((p) => {
             const members = participantsFor(p)
             const explicitFlag = p.is_member === true
             return explicitFlag || members.includes(String(user?.id))
         })
-    }, [projects, isAdmin, user, projectAssignees])
+    }, [projects, isAdmin, isGuest, user, projectAssignees, projectMembers])
+
+    const memberOptions = useMemo(
+        () => people.filter((p) => (p.role || '').toLowerCase() !== 'гость'),
+        [people]
+    )
 
     async function handleCreateProject(e) {
         e?.preventDefault()
         if (!newProject.name.trim()) return setError('Введите название проекта')
         try {
-            await createProject(token, newProject)
+            await createProject(token, {
+                ...newProject,
+                member_ids: newProject.member_ids || [],
+            })
             setNewProject({ name: '', description: '', member_ids: [] })
             setMessage('Проект создан')
-            setProjectModal(false)
+            setCreateOpen(false)
             loadData()
         } catch (e) {
             setError(e.message)
@@ -113,7 +142,7 @@ export default function DashboardPage() {
                 description: editProject.description,
                 member_ids: editProject.member_ids || [],
             })
-            setMessage('Проект обновлен')
+            setMessage('Проект обновлён')
             setEditProject(null)
             loadData()
         } catch (e) {
@@ -122,11 +151,24 @@ export default function DashboardPage() {
     }
 
     async function handleDeleteProject(id) {
-        if (!window.confirm('Удалить проект и все связанные данные?')) return
+        if (!window.confirm('Удалить проект и все его задачи?')) return
         try {
             await deleteProject(token, id)
-            setMessage('Проект удален')
+            setMessage('Проект удалён')
             loadData()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function openEdit(project) {
+        try {
+            const members = await listProjectMembers(token, project.id)
+            setProjectMembers((prev) => ({ ...prev, [project.id]: members || [] }))
+            setEditProject({
+                ...project,
+                member_ids: (members || []).map((m) => m.id),
+            })
         } catch (e) {
             setError(e.message)
         }
@@ -139,7 +181,7 @@ export default function DashboardPage() {
                     Проекты
                 </Typography>
                 {isAdmin ? (
-                    <Button variant="contained" onClick={() => setProjectModal(true)}>
+                    <Button variant="contained" onClick={() => setCreateOpen(true)}>
                         Создать проект
                     </Button>
                 ) : null}
@@ -165,7 +207,12 @@ export default function DashboardPage() {
                     return (
                         <Card key={p.id} variant="outlined">
                             <CardContent>
-                                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
+                                <Stack
+                                    direction="row"
+                                    justifyContent="space-between"
+                                    alignItems="flex-start"
+                                    spacing={2}
+                                >
                                     <Box sx={{ flex: 1 }}>
                                         <Typography variant="subtitle1" fontWeight={700}>
                                             {p.name}
@@ -173,13 +220,22 @@ export default function DashboardPage() {
                                         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                                             {p.description || 'Описание не задано'}
                                         </Typography>
-                                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1, flexWrap: 'wrap', rowGap: 0.5 }}>
+                                        <Stack
+                                            direction="row"
+                                            spacing={1}
+                                            alignItems="center"
+                                            sx={{ mb: 1, flexWrap: 'wrap', rowGap: 0.5 }}
+                                        >
                                             <Chip size="small" label={`Участников: ${participants.length}`} />
                                             {participantNames.slice(0, 5).map((n) => (
                                                 <Chip key={n} size="small" label={n} variant="outlined" />
                                             ))}
                                             {participantNames.length > 5 ? (
-                                                <Chip size="small" label={`+${participantNames.length - 5}`} variant="outlined" />
+                                                <Chip
+                                                    size="small"
+                                                    label={`+${participantNames.length - 5}`}
+                                                    variant="outlined"
+                                                />
                                             ) : null}
                                         </Stack>
                                         <Stack direction="row" spacing={1}>
@@ -203,23 +259,10 @@ export default function DashboardPage() {
                                     </Box>
                                     {isAdmin ? (
                                         <Stack spacing={1} alignItems="flex-end">
-                                            <Button
-                                                size="small"
-                                                color="error"
-                                                onClick={() => handleDeleteProject(p.id)}
-                                            >
+                                            <Button size="small" color="error" onClick={() => handleDeleteProject(p.id)}>
                                                 Удалить проект
                                             </Button>
-                                            <Button
-                                                size="small"
-                                                variant="outlined"
-                                                onClick={() =>
-                                                    setEditProject({
-                                                        ...p,
-                                                        member_ids: memberIdsOf(p),
-                                                    })
-                                                }
-                                            >
+                                            <Button size="small" variant="outlined" onClick={() => openEdit(p)}>
                                                 Редактировать
                                             </Button>
                                         </Stack>
@@ -234,7 +277,7 @@ export default function DashboardPage() {
                 ) : null}
             </Stack>
 
-            <Dialog open={projectModal} onClose={() => setProjectModal(false)} fullWidth maxWidth="sm">
+            <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="sm">
                 <DialogTitle>Создать проект</DialogTitle>
                 <DialogContent>
                     <Stack spacing={2} sx={{ mt: 1 }}>
@@ -257,23 +300,26 @@ export default function DashboardPage() {
                             label="Участники"
                             value={newProject.member_ids}
                             onChange={(e) =>
-                                setNewProject((prev) => ({ ...prev, member_ids: e.target.value }))
+                                setNewProject((prev) => ({
+                                    ...prev,
+                                    member_ids: Array.isArray(e.target.value) ? e.target.value : [],
+                                }))
                             }
-                            SelectProps={{ multiple: true }}
                             fullWidth
+                            SelectProps={{ multiple: true }}
                         >
-                            {people.map((p) => (
-                                <MenuItem key={p.id} value={p.id}>
-                                    {p.name}
+                            {memberOptions.map((u) => (
+                                <MenuItem key={u.id} value={u.id}>
+                                    {u.name} ({u.role})
                                 </MenuItem>
                             ))}
                         </TextField>
                     </Stack>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setProjectModal(false)}>Отмена</Button>
-                    <Button variant="contained" onClick={handleCreateProject}>
-                        Создать
+                    <Button onClick={() => setCreateOpen(false)}>Отмена</Button>
+                    <Button onClick={handleCreateProject} variant="contained">
+                        Сохранить
                     </Button>
                 </DialogActions>
             </Dialog>
@@ -306,14 +352,17 @@ export default function DashboardPage() {
                                 label="Участники"
                                 value={editProject.member_ids || []}
                                 onChange={(e) =>
-                                    setEditProject((prev) => ({ ...prev, member_ids: e.target.value }))
+                                    setEditProject((prev) => ({
+                                        ...prev,
+                                        member_ids: Array.isArray(e.target.value) ? e.target.value : [],
+                                    }))
                                 }
-                                SelectProps={{ multiple: true }}
                                 fullWidth
+                                SelectProps={{ multiple: true }}
                             >
-                                {people.map((p) => (
-                                    <MenuItem key={p.id} value={p.id}>
-                                        {p.name}
+                                {memberOptions.map((u) => (
+                                    <MenuItem key={u.id} value={u.id}>
+                                        {u.name} ({u.role})
                                     </MenuItem>
                                 ))}
                             </TextField>
@@ -322,7 +371,7 @@ export default function DashboardPage() {
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setEditProject(null)}>Отмена</Button>
-                    <Button variant="contained" onClick={handleUpdateProject}>
+                    <Button onClick={handleUpdateProject} variant="contained">
                         Сохранить
                     </Button>
                 </DialogActions>

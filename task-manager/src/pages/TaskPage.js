@@ -26,6 +26,7 @@ import {
     listUsers,
     updateComment,
     deleteCommentApi,
+    listProjectMembers,
 } from '../api'
 import { useAuth } from '../AuthContext'
 
@@ -86,6 +87,7 @@ export default function TaskPage() {
     const [priorities, setPriorities] = useState([])
     const [types, setTypes] = useState([])
     const [users, setUsers] = useState([])
+    const [projectMembers, setProjectMembers] = useState([])
     const [commentDraft, setCommentDraft] = useState('')
     const [commentPage, setCommentPage] = useState(1)
     const [historyPage, setHistoryPage] = useState(1)
@@ -113,16 +115,26 @@ export default function TaskPage() {
 
     async function loadRefs(projectId) {
         try {
-            const [sts, prs, tts, us] = await Promise.all([
+            const [sts, prs, tts, us, members] = await Promise.all([
                 listStatuses(token, projectId ? { project_id: projectId } : undefined),
                 listPriorities(token),
                 listTaskTypes(token),
                 listUsers(token),
+                projectId ? listProjectMembers(token, projectId) : Promise.resolve([]),
             ])
-            setStatuses(sts || [])
+            const unique = []
+            const seen = new Set()
+            ;(sts || []).forEach((s) => {
+                const key = `${s.project_id || 'null'}|${(s.name || '').toLowerCase()}`
+                if (seen.has(key)) return
+                seen.add(key)
+                unique.push(s)
+            })
+            setStatuses(unique)
             setPriorities(prs || [])
             setTypes(tts || [])
             setUsers(us || [])
+            setProjectMembers(members || [])
         } catch (e) {
             setError(e.message)
         }
@@ -141,6 +153,10 @@ export default function TaskPage() {
     }, [statuses, task])
 
     const statusMap = useMemo(() => new Map(uniqueStatuses.map((s) => [s.id, s.name])), [uniqueStatuses])
+    const availableAssignees = useMemo(
+        () => projectMembers.filter((m) => (m.role || '').toLowerCase() !== 'гость'),
+        [projectMembers]
+    )
 
     async function loadTask() {
         try {
@@ -171,8 +187,10 @@ export default function TaskPage() {
         }
     }
 
+    const canEdit = task ? isAdmin || task.assignee_id === user?.id : false
+
     async function saveTask() {
-        if (isGuest) return
+        if (isGuest || !canEdit) return
         try {
             await updateTask(token, taskId, {
                 title: form.title,
@@ -191,10 +209,12 @@ export default function TaskPage() {
     }
 
     async function handleStatusChange(statusId) {
-        setForm((prev) => ({ ...prev, status_id: statusId }))
+        if (!canEdit || isGuest) return
         try {
-            await updateTask(token, taskId, { status_id: statusId })
-            loadTask()
+            await updateTask(token, taskId, {
+                status_id: statusId,
+            })
+            await loadTask()
         } catch (e) {
             setError(e.message)
         }
@@ -202,402 +222,406 @@ export default function TaskPage() {
 
     async function handleAddComment(e) {
         e.preventDefault()
-        if (!commentDraft.trim()) return
+        if (!commentDraft.trim() || isGuest || !canEdit) return
         try {
-            await addComment(token, taskId, commentDraft.trim())
+            const res = await addComment(token, taskId, commentDraft.trim())
+            setComments(res.comments || [])
             setCommentDraft('')
-            loadTask()
+            setCommentPage(1)
         } catch (e) {
             setError(e.message)
         }
     }
 
     async function handleSaveComment(id) {
-        if (!commentEditBody.trim()) return
+        if (!commentEditBody.trim() || isGuest || !canEdit) return
         try {
-            await updateComment(token, taskId, id, commentEditBody.trim())
+            const res = await updateComment(token, id, commentEditBody.trim())
+            setComments(res.comments || comments)
             setCommentEditId(null)
             setCommentEditBody('')
-            loadTask()
         } catch (e) {
             setError(e.message)
         }
     }
 
     async function handleDeleteComment(id) {
+        if (isGuest || !canEdit) return
         try {
-            await deleteCommentApi(token, taskId, id)
-            loadTask()
+            const res = await deleteCommentApi(token, id)
+            setComments(res.comments || comments.filter((c) => c.id !== id))
         } catch (e) {
             setError(e.message)
         }
     }
 
-    const paginatedComments = comments.slice((commentPage - 1) * pageSize, commentPage * pageSize)
-    const paginatedHistory = history.slice((historyPage - 1) * pageSize, historyPage * pageSize)
+    const paginatedComments = useMemo(() => {
+        const start = (commentPage - 1) * pageSize
+        return comments.slice(start, start + pageSize)
+    }, [comments, commentPage])
 
-    if (!task) {
-        return (
-            <Container sx={{ py: 4 }}>
-                <Typography>Загрузка...</Typography>
-            </Container>
-        )
-    }
+    const paginatedHistory = useMemo(() => {
+        const start = (historyPage - 1) * pageSize
+        return history.slice(start, start + pageSize)
+    }, [history, historyPage])
 
-    const statusLabel = task.status_name || statusMap.get(task.status_id) || 'Статус не задан'
+    const statusLabel = task ? statusMap.get(task.status_id) || '-' : '-'
 
     return (
         <Container sx={{ py: 4 }}>
-            <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
-                <Button variant="outlined" onClick={() => navigate(-1)}>
-                    Назад
-                </Button>
-                <Typography variant="h5" fontWeight={800}>
-                    {task.title}
-                </Typography>
-            </Stack>
-            {task.parent_id ? (
-                <Typography variant="body2" sx={{ mb: 1 }}>
-                    Родительская задача:{' '}
-                    <Link component={RouterLink} to={`/tasks/${task.parent_id}`} underline="hover">
-                        {task.parent_title || task.parent_id}
-                    </Link>
-                </Typography>
-            ) : null}
+            <Button variant="outlined" onClick={() => navigate(-1)} sx={{ mb: 2 }}>
+                Назад
+            </Button>
+
             {error ? (
                 <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
                     {error}
                 </Alert>
             ) : null}
-            <Paper sx={{ p: 2 }}>
-                <Stack spacing={2}>
-                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
-                        <Chip label={`Статус: ${statusLabel}`} size="small" />
-                        <Chip label={`Приоритет: ${task.priority_name}`} size="small" />
-                        <Chip label={`Тип: ${task.type_name || '-'}`} size="small" />
-                        {task.assignee_name ? (
-                            <Chip label={`Исп.: ${task.assignee_name}`} size="small" />
-                        ) : null}
-                        <Chip
-                            label={`Затрачено: ${formatSpent(task.spent_minutes)}`}
-                            size="small"
-                            color={spentColor(task.spent_minutes, task.estimated_minutes)}
-                        />
-                        <Chip label={`Оценка: ${formatSpent(task.estimated_minutes)}`} size="small" />
-                        {task.due_date ? (
-                            <Chip
-                                label={`Дедлайн: ${new Date(task.due_date).toLocaleDateString()}`}
-                                size="small"
-                            />
-                        ) : null}
-                    </Stack>
 
-                    <Typography variant="h6" fontWeight={700}>
-                        Редактировать задачу
-                    </Typography>
+            {task ? (
+                <Paper variant="outlined" sx={{ p: 3 }}>
                     <Stack spacing={2}>
-                        <TextField
-                            label="Название"
-                            value={form.title}
-                            onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
-                            fullWidth
-                        />
-                        <TextField
-                            label="Описание"
-                            value={form.description}
-                            onChange={(e) =>
-                                setForm((prev) => ({ ...prev, description: e.target.value }))
-                            }
-                            fullWidth
-                            multiline
-                            minRows={3}
-                        />
-                        <Box
-                            sx={{
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: 2,
-                            }}
-                        >
-                            <TextField
-                                select
-                                label="Статус"
-                                value={form.status_id}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, status_id: Number(e.target.value) }))
-                                }
-                                size="small"
-                                sx={{ minWidth: { xs: '100%', sm: 200 } }}
-                                disabled={isGuest}
-                            >
-                                {uniqueStatuses.map((s) => (
-                                    <MenuItem key={s.id} value={s.id}>
-                                        {s.name}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
-                            <TextField
-                                select
-                                label="Приоритет"
-                                value={form.priority_id}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, priority_id: Number(e.target.value) }))
-                                }
-                                size="small"
-                                sx={{ minWidth: { xs: '100%', sm: 180 } }}
-                                disabled={isGuest}
-                            >
-                                {priorities.map((p) => (
-                                    <MenuItem key={p.id} value={p.id}>
-                                        {p.name}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
-                            <TextField
-                                select
-                                label="Тип"
-                                value={form.type_id}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, type_id: Number(e.target.value) }))
-                                }
-                                size="small"
-                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
-                                disabled={isGuest}
-                            >
-                                {types.map((t) => (
-                                    <MenuItem key={t.id} value={t.id}>
-                                        {t.name}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
-                            <TextField
-                                select
-                                label="Исполнитель"
-                                value={form.assignee_id}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, assignee_id: e.target.value }))
-                                }
-                                size="small"
-                                sx={{ minWidth: { xs: '100%', sm: 200 } }}
-                                disabled={!isAdmin}
-                            >
-                                <MenuItem value="">Не выбрано</MenuItem>
-                                {users.map((u) => (
-                                    <MenuItem key={u.id} value={u.id}>
-                                        {u.name}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
-                            <TextField
-                                label="Затраченное время"
-                                type="number"
-                                value={form.spent_value}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, spent_value: e.target.value }))
-                                }
-                                size="small"
-                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
-                                InputProps={{ inputProps: { min: 0, step: 1 } }}
-                            />
-                            <TextField
-                                select
-                                label="Единицы"
-                                size="small"
-                                value={form.spent_unit}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, spent_unit: e.target.value }))
-                                }
-                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
-                            >
-                                {timeUnits.map((u) => (
-                                    <MenuItem key={u.key} value={u.key}>
-                                        {u.label}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
-                            <TextField
-                                label="Оценка времени"
-                                type="number"
-                                value={form.estimated_value}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, estimated_value: e.target.value }))
-                                }
-                                size="small"
-                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
-                                InputProps={{ inputProps: { min: 0, step: 1 } }}
-                                disabled={!isAdmin && user?.id !== task.author_id}
-                            />
-                            <TextField
-                                select
-                                label="Единицы оценки"
-                                size="small"
-                                value={form.estimated_unit}
-                                onChange={(e) =>
-                                    setForm((prev) => ({ ...prev, estimated_unit: e.target.value }))
-                                }
-                                sx={{ minWidth: { xs: '100%', sm: 160 } }}
-                                disabled={!isAdmin && user?.id !== task.author_id}
-                            >
-                                {timeUnits.map((u) => (
-                                    <MenuItem key={u.key} value={u.key}>
-                                        {u.label}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
-                        </Box>
-                        <Button
-                            variant="contained"
-                            onClick={saveTask}
-                            disabled={isGuest}
-                            sx={{ alignSelf: 'flex-start' }}
-                        >
-                            Сохранить изменения
-                        </Button>
-                    </Stack>
+                        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between">
+                            <Typography variant="h5" fontWeight={800}>
+                                {task.title}
+                            </Typography>
+                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap rowGap={0.5}>
+                                <Chip label={`Статус: ${statusLabel}`} size="small" />
+                                <Chip label={`Приоритет: ${task.priority_name}`} size="small" />
+                                <Chip label={`Тип: ${task.type_name || '-'}`} size="small" />
+                                {task.assignee_name ? (
+                                    <Chip label={`Исп.: ${task.assignee_name}`} size="small" />
+                                ) : null}
+                                <Chip
+                                    label={`Затрачено: ${formatSpent(task.spent_minutes)}`}
+                                    size="small"
+                                    color={spentColor(task.spent_minutes, task.estimated_minutes)}
+                                />
+                                <Chip label={`Оценка: ${formatSpent(task.estimated_minutes)}`} size="small" />
+                                {task.due_date ? (
+                                    <Chip
+                                        label={`Дедлайн: ${new Date(task.due_date).toLocaleDateString()}`}
+                                        size="small"
+                                    />
+                                ) : null}
+                            </Stack>
+                        </Stack>
 
-                    <Divider />
-                    <Typography variant="subtitle1" fontWeight={700}>
-                        Обновить статус
-                    </Typography>
-                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 1 }}>
-                        {uniqueStatuses.map((s) => (
+                        <Stack spacing={2}>
+                            <TextField
+                                label="Название"
+                                value={form.title}
+                                onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                                fullWidth
+                                disabled={!canEdit || isGuest}
+                            />
+                            <TextField
+                                label="Описание"
+                                value={form.description}
+                                onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                                fullWidth
+                                multiline
+                                minRows={3}
+                                disabled={!canEdit || isGuest}
+                            />
+                            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
+                                <TextField
+                                    select
+                                    label="Статус"
+                                    value={form.status_id}
+                                    onChange={(e) => setForm((prev) => ({ ...prev, status_id: e.target.value }))}
+                                    fullWidth
+                                    disabled={!canEdit || isGuest}
+                                >
+                                    {uniqueStatuses.map((s) => (
+                                        <MenuItem key={s.id} value={s.id}>
+                                            {s.name}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                                <TextField
+                                    select
+                                    label="Приоритет"
+                                    value={form.priority_id}
+                                    onChange={(e) => setForm((prev) => ({ ...prev, priority_id: e.target.value }))}
+                                    fullWidth
+                                    disabled={!canEdit || isGuest}
+                                >
+                                    {priorities.map((p) => (
+                                        <MenuItem key={p.id} value={p.id}>
+                                            {p.name}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                                <TextField
+                                    select
+                                    label="Тип"
+                                    value={form.type_id}
+                                    onChange={(e) => setForm((prev) => ({ ...prev, type_id: e.target.value }))}
+                                    fullWidth
+                                    disabled={!canEdit || isGuest}
+                                >
+                                    {types.map((t) => (
+                                        <MenuItem key={t.id} value={t.id}>
+                                            {t.name}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                                <TextField
+                                    select
+                                    label="Исполнитель"
+                                    value={form.assignee_id}
+                                    onChange={(e) => setForm((prev) => ({ ...prev, assignee_id: e.target.value }))}
+                                    fullWidth
+                                    disabled={!canEdit || isGuest}
+                                >
+                                    <MenuItem value="">Не назначен</MenuItem>
+                                    {availableAssignees.map((u) => (
+                                        <MenuItem key={u.id} value={u.id}>
+                                            {u.name}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                            </Stack>
+
+                            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
+                                <TextField
+                                    label="Затраченное время"
+                                    type="number"
+                                    value={form.spent_value}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({ ...prev, spent_value: Number(e.target.value) }))
+                                    }
+                                    fullWidth
+                                    disabled={!canEdit || isGuest}
+                                />
+                                <TextField
+                                    select
+                                    label="Единицы"
+                                    value={form.spent_unit}
+                                    onChange={(e) => setForm((prev) => ({ ...prev, spent_unit: e.target.value }))}
+                                    fullWidth
+                                    disabled={!canEdit || isGuest}
+                                >
+                                    {timeUnits.map((u) => (
+                                        <MenuItem key={u.key} value={u.key}>
+                                            {u.label}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                                <TextField
+                                    label="Оценка времени"
+                                    type="number"
+                                    value={form.estimated_value}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({
+                                            ...prev,
+                                            estimated_value: Number(e.target.value),
+                                        }))
+                                    }
+                                    fullWidth
+                                    disabled={!isAdmin || isGuest}
+                                />
+                                <TextField
+                                    select
+                                    label="Единицы оценки"
+                                    value={form.estimated_unit}
+                                    onChange={(e) =>
+                                        setForm((prev) => ({ ...prev, estimated_unit: e.target.value }))
+                                    }
+                                    fullWidth
+                                    disabled={!isAdmin || isGuest}
+                                >
+                                    {timeUnits.map((u) => (
+                                        <MenuItem key={u.key} value={u.key}>
+                                            {u.label}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                            </Stack>
+
                             <Button
-                                key={s.id}
-                                variant={task.status_id === s.id ? 'contained' : 'outlined'}
-                                size="small"
-                                onClick={() => handleStatusChange(s.id)}
+                                variant="contained"
+                                onClick={saveTask}
+                                disabled={isGuest || !canEdit}
+                                sx={{ alignSelf: 'flex-start' }}
                             >
-                                {s.name}
+                                Сохранить изменения
                             </Button>
-                        ))}
-                    </Stack>
+                        </Stack>
 
-                    <Typography variant="subtitle1" fontWeight={700}>
-                        Дочерние задачи
-                    </Typography>
-                    {children.length ? (
-                        <Stack spacing={1}>
-                            {children.map((c) => (
-                                <Link key={c.id} component={RouterLink} to={`/tasks/${c.id}`} underline="hover">
-                                    {c.title}
-                                </Link>
+                        <Divider />
+                        <Typography variant="subtitle1" fontWeight={700}>
+                            Обновить статус
+                        </Typography>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap rowGap={1}>
+                            {uniqueStatuses.map((s) => (
+                                <Button
+                                    key={s.id}
+                                    size="small"
+                                    variant={s.id === form.status_id ? 'contained' : 'outlined'}
+                                    onClick={() => handleStatusChange(s.id)}
+                                    disabled={isGuest || !canEdit}
+                                >
+                                    {s.name}
+                                </Button>
                             ))}
                         </Stack>
-                    ) : (
-                        <Typography color="text.secondary">Дочерних задач нет</Typography>
-                    )}
 
-                    <Typography variant="subtitle1" fontWeight={700}>
-                        Комментарии
-                    </Typography>
-                    <Stack spacing={1}>
-                        {paginatedComments.map((c) => (
-                            <Paper key={c.id} variant="outlined" sx={{ p: 1.5 }}>
-                                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                    <Typography variant="caption" color="text.secondary">
-                                        {c.author_name || '—'} · {new Date(c.created_at).toLocaleString()}
-                                    </Typography>
-                                    {(isAdmin || c.author_id === user?.id) && (
-                                        <Stack direction="row" spacing={1}>
-                                            <Button
-                                                size="small"
-                                                onClick={() => {
-                                                    setCommentEditId(c.id)
-                                                    setCommentEditBody(c.body)
-                                                }}
-                                            >
-                                                Править
-                                            </Button>
-                                            <Button
-                                                size="small"
-                                                color="error"
-                                                onClick={() => handleDeleteComment(c.id)}
-                                            >
-                                                Удалить
-                                            </Button>
-                                        </Stack>
-                                    )}
-                                </Stack>
-                                {commentEditId === c.id ? (
-                                    <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-                                        <TextField
-                                            fullWidth
-                                            size="small"
-                                            multiline
-                                            minRows={2}
-                                            value={commentEditBody}
-                                            onChange={(e) => setCommentEditBody(e.target.value)}
-                                        />
-                                        <Button variant="contained" onClick={() => handleSaveComment(c.id)}>
-                                            Сохранить
-                                        </Button>
-                                    </Box>
-                                ) : (
-                                    <Typography variant="body2" sx={{ mt: 0.5 }}>
-                                        {c.body}
-                                    </Typography>
-                                )}
-                            </Paper>
-                        ))}
-                        {!comments.length ? (
-                            <Typography color="text.secondary">Нет комментариев</Typography>
-                        ) : (
-                            <Pagination
-                                size="small"
-                                page={commentPage}
-                                count={Math.max(1, Math.ceil(comments.length / pageSize))}
-                                onChange={(_, page) => setCommentPage(page)}
-                            />
-                        )}
-                        <Box
-                            component="form"
-                            onSubmit={handleAddComment}
-                            sx={{ display: 'flex', gap: 1, alignItems: 'center' }}
-                        >
-                            <TextField
-                                size="small"
-                                fullWidth
-                                label="Новый комментарий"
-                                value={commentDraft}
-                                onChange={(e) => setCommentDraft(e.target.value)}
-                            />
-                            <Button type="submit" variant="outlined" disabled={isGuest}>
-                                Добавить
-                            </Button>
-                        </Box>
-                    </Stack>
-
-                    <Divider />
-                    <Typography variant="subtitle1" fontWeight={700}>
-                        История
-                    </Typography>
-                    <Stack spacing={1}>
-                        {paginatedHistory.map((h) => (
-                            <Paper key={h.id} variant="outlined" sx={{ p: 1 }}>
-                                <Typography variant="caption" color="text.secondary">
-                                    {h.action} · {new Date(h.created_at).toLocaleString()} ·{' '}
-                                    {h.author_name || 'system'}
+                        <Divider />
+                        {task.parent_id ? (
+                            <Stack spacing={0.5}>
+                                <Typography variant="subtitle1" fontWeight={700}>
+                                    Родительская задача
                                 </Typography>
-                                {h.new_value ? (
-                                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                                        {JSON.stringify(h.new_value, null, 2)}
-                                    </Typography>
-                                ) : null}
-                            </Paper>
-                        ))}
-                        {!history.length ? (
-                            <Typography color="text.secondary">История пуста</Typography>
+                                <Link component={RouterLink} to={`/tasks/${task.parent_id}`} underline="hover">
+                                    {task.parent_title || task.parent_id}
+                                </Link>
+                            </Stack>
+                        ) : null}
+
+                        <Typography variant="subtitle1" fontWeight={700}>
+                            Дочерние задачи
+                        </Typography>
+                        {children.length ? (
+                            <Stack spacing={1}>
+                                {children.map((c) => (
+                                    <Link key={c.id} component={RouterLink} to={`/tasks/${c.id}`} underline="hover">
+                                        {c.title}
+                                    </Link>
+                                ))}
+                            </Stack>
                         ) : (
-                            <Pagination
-                                size="small"
-                                page={historyPage}
-                                count={Math.max(1, Math.ceil(history.length / pageSize))}
-                                onChange={(_, page) => setHistoryPage(page)}
-                            />
+                            <Typography color="text.secondary">Дочерних задач нет</Typography>
                         )}
+
+                        <Divider />
+                        <Typography variant="subtitle1" fontWeight={700}>
+                            Комментарии
+                        </Typography>
+                        <Stack spacing={1}>
+                            {paginatedComments.map((c) => (
+                                <Paper key={c.id} variant="outlined" sx={{ p: 1 }}>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Typography variant="caption" color="text.secondary">
+                                            {c.author_name || 'Без имени'} ·{' '}
+                                            {new Date(c.created_at).toLocaleString()}
+                                        </Typography>
+                                        {canEdit && !isGuest ? (
+                                            <Stack direction="row" spacing={1}>
+                                                <Button
+                                                    size="small"
+                                                    onClick={() => {
+                                                        setCommentEditId(c.id)
+                                                        setCommentEditBody(c.body)
+                                                    }}
+                                                >
+                                                    Править
+                                                </Button>
+                                                <Button
+                                                    size="small"
+                                                    color="error"
+                                                    onClick={() => handleDeleteComment(c.id)}
+                                                >
+                                                    Удалить
+                                                </Button>
+                                            </Stack>
+                                        ) : null}
+                                    </Stack>
+                                    {commentEditId === c.id ? (
+                                        <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
+                                            <TextField
+                                                size="small"
+                                                fullWidth
+                                                value={commentEditBody}
+                                                onChange={(e) => setCommentEditBody(e.target.value)}
+                                            />
+                                            <Button
+                                                variant="contained"
+                                                size="small"
+                                                onClick={() => handleSaveComment(c.id)}
+                                            >
+                                                Сохранить
+                                            </Button>
+                                            <Button
+                                                variant="outlined"
+                                                size="small"
+                                                onClick={() => setCommentEditId(null)}
+                                            >
+                                                Отмена
+                                            </Button>
+                                        </Box>
+                                    ) : (
+                                        <Typography variant="body2" sx={{ mt: 0.5 }}>
+                                            {c.body}
+                                        </Typography>
+                                    )}
+                                </Paper>
+                            ))}
+                            {!comments.length ? (
+                                <Typography color="text.secondary">Нет комментариев</Typography>
+                            ) : (
+                                <Pagination
+                                    size="small"
+                                    page={commentPage}
+                                    count={Math.max(1, Math.ceil(comments.length / pageSize))}
+                                    onChange={(_, page) => setCommentPage(page)}
+                                />
+                            )}
+                            <Box
+                                component="form"
+                                onSubmit={handleAddComment}
+                                sx={{ display: 'flex', gap: 1, alignItems: 'center' }}
+                            >
+                                <TextField
+                                    size="small"
+                                    fullWidth
+                                    label="Новый комментарий"
+                                    value={commentDraft}
+                                    onChange={(e) => setCommentDraft(e.target.value)}
+                                    disabled={isGuest || !canEdit}
+                                />
+                                <Button type="submit" variant="outlined" disabled={isGuest || !canEdit}>
+                                    Добавить
+                                </Button>
+                            </Box>
+                        </Stack>
+
+                        <Divider />
+                        <Typography variant="subtitle1" fontWeight={700}>
+                            История
+                        </Typography>
+                        <Stack spacing={1}>
+                            {paginatedHistory.map((h) => (
+                                <Paper key={h.id} variant="outlined" sx={{ p: 1 }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                        {h.action} · {new Date(h.created_at).toLocaleString()} ·{' '}
+                                        {h.author_name || 'system'}
+                                    </Typography>
+                                    {h.new_value ? (
+                                        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                                            {JSON.stringify(h.new_value, null, 2)}
+                                        </Typography>
+                                    ) : null}
+                                </Paper>
+                            ))}
+                            {!history.length ? (
+                                <Typography color="text.secondary">История пуста</Typography>
+                            ) : (
+                                <Pagination
+                                    size="small"
+                                    page={historyPage}
+                                    count={Math.max(1, Math.ceil(history.length / pageSize))}
+                                    onChange={(_, page) => setHistoryPage(page)}
+                                />
+                            )}
+                        </Stack>
                     </Stack>
-                </Stack>
-            </Paper>
+                </Paper>
+            ) : (
+                <Typography>Загрузка...</Typography>
+            )}
         </Container>
     )
 }

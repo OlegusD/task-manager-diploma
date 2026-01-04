@@ -236,48 +236,6 @@ async function init() {
       ON CONFLICT (name) DO NOTHING;
     `)
 
-        const { rows: existingProjects } = await client.query(
-            `SELECT id FROM projects WHERE name='General' LIMIT 1;`
-        )
-        const defaultProjectId = existingProjects[0]?.id ?? uuidv4()
-
-        const { rows: projectRows } = await client.query(
-            `
-      INSERT INTO projects (id, name, description)
-      VALUES ($1, 'General', 'Default project')
-      ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description
-      RETURNING id;
-    `,
-            [defaultProjectId]
-        )
-        const projectId = projectRows[0]?.id
-        if (projectId) {
-            await client.query(
-                `
-        WITH candidates AS (
-          SELECT id,
-                 row_number() OVER (PARTITION BY name ORDER BY id) AS rn
-          FROM statuses s
-          WHERE project_id IS NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM statuses s2
-              WHERE s2.name = s.name AND s2.project_id = $1
-            )
-        )
-        UPDATE statuses s
-        SET project_id = $1
-        FROM candidates c
-        WHERE s.id = c.id AND c.rn = 1;
-        `,
-                [projectId]
-            )
-        }
-        if (projectId) {
-            await client.query(`UPDATE tasks SET project_id = $1 WHERE project_id IS NULL`, [
-                projectId,
-            ])
-        }
-
         const { rows: adminRole } = await client.query(
             `SELECT id FROM roles WHERE name='admin' LIMIT 1;`
         )

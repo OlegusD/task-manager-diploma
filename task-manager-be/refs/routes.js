@@ -49,8 +49,10 @@ router.get('/projects', async (_req, res) => {
 router.get('/projects/:id/members', async (req, res) => {
     const { id } = req.params
     const { rows } = await query(
-        `SELECT pm.user_id AS id, u.name, u.email
-       FROM project_members pm JOIN users u ON u.id = pm.user_id
+        `SELECT pm.user_id AS id, u.name, u.email, r.name AS role
+       FROM project_members pm
+       JOIN users u ON u.id = pm.user_id
+       JOIN roles r ON r.id = u.role_id
        WHERE pm.project_id = $1`,
         [id]
     )
@@ -117,6 +119,67 @@ router.delete('/projects/:id', requireRole('admin'), async (req, res) => {
         await query('ROLLBACK')
         console.error(e)
         res.status(500).json({ error: 'Failed to delete project' })
+    }
+})
+
+router.patch('/projects/:id', requireRole('admin'), async (req, res) => {
+    const { id } = req.params
+    const { name, description, member_ids } = req.body || {}
+    if (!name && description === undefined && member_ids === undefined) {
+        return res.status(400).json({ error: 'Nothing to update' })
+    }
+    try {
+        await query('BEGIN')
+        if (name || description !== undefined) {
+            const sets = []
+            const params = []
+            if (name) {
+                params.push(name)
+                sets.push(`name=$${params.length}`)
+            }
+            if (description !== undefined) {
+                params.push(description)
+                sets.push(`description=$${params.length}`)
+            }
+            params.push(id)
+            await query(`UPDATE projects SET ${sets.join(', ')} WHERE id=$${params.length}`, params)
+        }
+
+        if (Array.isArray(member_ids)) {
+            const current = await query(
+                `SELECT user_id FROM project_members WHERE project_id = $1`,
+                [id]
+            )
+            const currentIds = new Set(current.rows.map((r) => String(r.user_id)))
+            const nextIds = new Set(member_ids.map(String))
+
+            const toAdd = member_ids.filter((uid) => !currentIds.has(String(uid)))
+            const toRemove = Array.from(currentIds).filter((uid) => !nextIds.has(uid))
+
+            for (const uid of toAdd) {
+                await query(
+                    `INSERT INTO project_members (project_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+                    [id, uid]
+                )
+            }
+            if (toRemove.length) {
+                await query(
+                    `UPDATE tasks SET assignee_id = NULL WHERE project_id = $1 AND assignee_id = ANY($2::uuid[])`,
+                    [id, toRemove]
+                )
+                await query(
+                    `DELETE FROM project_members WHERE project_id = $1 AND user_id = ANY($2::uuid[])`,
+                    [id, toRemove]
+                )
+            }
+        }
+
+        await query('COMMIT')
+        res.json({ ok: true })
+    } catch (e) {
+        await query('ROLLBACK')
+        console.error(e)
+        res.status(500).json({ error: 'Failed to update project' })
     }
 })
 

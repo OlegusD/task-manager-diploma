@@ -17,7 +17,14 @@ import {
     Alert,
     Button,
 } from '@mui/material'
-import { listTasks, listStatuses, listPriorities, listTaskTypes, listUsers, updateTask } from '../api'
+import {
+    listTasks,
+    listStatuses,
+    listPriorities,
+    listTaskTypes,
+    listProjectMembers,
+    updateTask,
+} from '../api'
 import { useAuth } from '../AuthContext'
 
 function deadlineColor(task) {
@@ -34,13 +41,14 @@ function deadlineColor(task) {
 
 export default function ListPage() {
     const { projectId } = useParams()
-    const { token } = useAuth()
+    const { token, user } = useAuth()
+    const isAdmin = user?.role === 'admin'
     const [tasks, setTasks] = useState([])
     const [error, setError] = useState('')
     const [statusMap, setStatusMap] = useState({})
     const [priorityMap, setPriorityMap] = useState({})
     const [typeMap, setTypeMap] = useState({})
-    const [users, setUsers] = useState([])
+    const [members, setMembers] = useState([])
     const [filters, setFilters] = useState({ q: '', status_id: '', priority_id: '', assignee_id: '' })
 
     useEffect(() => {
@@ -51,16 +59,16 @@ export default function ListPage() {
 
     async function loadRefs() {
         try {
-            const [sts, prs, tts, us] = await Promise.all([
+            const [sts, prs, tts, ms] = await Promise.all([
                 listStatuses(token, { project_id: projectId }),
                 listPriorities(token),
                 listTaskTypes(token),
-                listUsers(token),
+                listProjectMembers(token, projectId),
             ])
             setStatusMap(Object.fromEntries((sts || []).map((s) => [s.id, s.name])))
             setPriorityMap(Object.fromEntries((prs || []).map((p) => [p.id, p.name])))
             setTypeMap(Object.fromEntries((tts || []).map((t) => [t.id, t.name])))
-            setUsers(us || [])
+            setMembers(ms || [])
         } catch (e) {
             setError(e.message)
         }
@@ -132,7 +140,7 @@ export default function ListPage() {
                     sx={{ minWidth: 180 }}
                 >
                     <MenuItem value="">Все</MenuItem>
-                    {users.map((u) => (
+                    {members.map((u) => (
                         <MenuItem key={u.id} value={u.id}>
                             {u.name}
                         </MenuItem>
@@ -184,6 +192,7 @@ export default function ListPage() {
                                     value={t.status_id}
                                     onChange={(e) => updateInline(t.id, { status_id: Number(e.target.value) })}
                                     sx={{ minWidth: 140 }}
+                                    disabled={!isAdmin && t.assignee_id !== user?.id}
                                 >
                                     {Object.entries(statusMap).map(([id, name]) => (
                                         <MenuItem key={id} value={Number(id)}>
@@ -201,9 +210,10 @@ export default function ListPage() {
                                     value={t.assignee_id || ''}
                                     onChange={(e) => updateInline(t.id, { assignee_id: e.target.value || null })}
                                     sx={{ minWidth: 160 }}
+                                    disabled={!isAdmin && t.assignee_id !== user?.id}
                                 >
-                                    <MenuItem value="">Не выбрано</MenuItem>
-                                    {users.map((u) => (
+                                    <MenuItem value="">Нет исполнителя</MenuItem>
+                                    {members.map((u) => (
                                         <MenuItem key={u.id} value={u.id}>
                                             {u.name}
                                         </MenuItem>

@@ -123,9 +123,17 @@ router.post('/users', requireAuth, requireRole('admin'), async (req, res) => {
 
 router.delete('/users/:id', requireAuth, requireRole('admin'), async (req, res) => {
     const { id } = req.params
-    await query('DELETE FROM project_members WHERE user_id=$1', [id])
-    await query('DELETE FROM users WHERE id=$1 AND email <> $2', [id, 'admin@local'])
-    res.json({ ok: true })
+    try {
+        await query('BEGIN')
+        await query('UPDATE tasks SET assignee_id = NULL WHERE assignee_id = $1', [id])
+        await query('DELETE FROM project_members WHERE user_id=$1', [id])
+        await query('DELETE FROM users WHERE id=$1 AND email <> $2', [id, 'admin@local'])
+        await query('COMMIT')
+        res.json({ ok: true })
+    } catch (e) {
+        await query('ROLLBACK')
+        res.status(500).json({ error: 'Failed to delete user' })
+    }
 })
 
 router.patch('/users/:id', requireAuth, requireRole('admin'), async (req, res) => {

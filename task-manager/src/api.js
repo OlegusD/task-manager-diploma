@@ -48,6 +48,10 @@ export function deleteProject(token, id) {
     return api(`/refs/projects/${id}`, { method: 'DELETE', token })
 }
 
+export function listProjectMembers(token, projectId) {
+    return api(`/refs/projects/${projectId}/members`, { token })
+}
+
 export function listStatuses(token, params = {}) {
     const search = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => {
