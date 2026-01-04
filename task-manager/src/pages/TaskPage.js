@@ -109,20 +109,24 @@ export default function TaskPage() {
     useEffect(() => {
         if (!token) return
         loadTask()
-        Promise.all([
-            listStatuses(token),
-            listPriorities(token),
-            listTaskTypes(token),
-            listUsers(token),
-        ])
-            .then(([sts, prs, tts, us]) => {
-                setStatuses(sts || [])
-                setPriorities(prs || [])
-                setTypes(tts || [])
-                setUsers(us || [])
-            })
-            .catch(() => {})
     }, [token, taskId])
+
+    async function loadRefs(projectId) {
+        try {
+            const [sts, prs, tts, us] = await Promise.all([
+                listStatuses(token, projectId ? { project_id: projectId } : undefined),
+                listPriorities(token),
+                listTaskTypes(token),
+                listUsers(token),
+            ])
+            setStatuses(sts || [])
+            setPriorities(prs || [])
+            setTypes(tts || [])
+            setUsers(us || [])
+        } catch (e) {
+            setError(e.message)
+        }
+    }
 
     const uniqueStatuses = useMemo(() => {
         const map = new Map()
@@ -161,6 +165,7 @@ export default function TaskPage() {
                 estimated_value: parsedEstimated.value,
                 estimated_unit: parsedEstimated.unit,
             })
+            await loadRefs(data.task.project_id)
         } catch (e) {
             setError(e.message)
         }
@@ -186,6 +191,7 @@ export default function TaskPage() {
     }
 
     async function handleStatusChange(statusId) {
+        setForm((prev) => ({ ...prev, status_id: statusId }))
         try {
             await updateTask(token, taskId, { status_id: statusId })
             loadTask()

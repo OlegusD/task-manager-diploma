@@ -19,7 +19,7 @@ import {
 } from '@mui/material'
 import { Link as RouterLink } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
-import { listProjects, createProject, updateProject, listUsers, listTasks } from '../api'
+import { listProjects, createProject, updateProject, deleteProject, listUsers, listTasks } from '../api'
 
 export default function DashboardPage() {
     const { token, user } = useAuth()
@@ -121,6 +121,17 @@ export default function DashboardPage() {
         }
     }
 
+    async function handleDeleteProject(id) {
+        if (!window.confirm('Удалить проект и все связанные данные?')) return
+        try {
+            await deleteProject(token, id)
+            setMessage('Проект удален')
+            loadData()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
     return (
         <Container sx={{ py: 6 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
@@ -154,8 +165,8 @@ export default function DashboardPage() {
                     return (
                         <Card key={p.id} variant="outlined">
                             <CardContent>
-                                <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-                                    <Box sx={{ flex: 1, pr: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={2}>
+                                    <Box sx={{ flex: 1 }}>
                                         <Typography variant="subtitle1" fontWeight={700}>
                                             {p.name}
                                         </Typography>
@@ -191,14 +202,27 @@ export default function DashboardPage() {
                                         </Stack>
                                     </Box>
                                     {isAdmin ? (
-                                        <Button size="small" onClick={() =>
-                                            setEditProject({
-                                                ...p,
-                                                member_ids: memberIdsOf(p),
-                                            })
-                                        }>
-                                            Редактировать
-                                        </Button>
+                                        <Stack spacing={1} alignItems="flex-end">
+                                            <Button
+                                                size="small"
+                                                color="error"
+                                                onClick={() => handleDeleteProject(p.id)}
+                                            >
+                                                Удалить проект
+                                            </Button>
+                                            <Button
+                                                size="small"
+                                                variant="outlined"
+                                                onClick={() =>
+                                                    setEditProject({
+                                                        ...p,
+                                                        member_ids: memberIdsOf(p),
+                                                    })
+                                                }
+                                            >
+                                                Редактировать
+                                            </Button>
+                                        </Stack>
                                     ) : null}
                                 </Stack>
                             </CardContent>

@@ -44,6 +44,10 @@ export function updateProject(token, id, payload) {
     return api(`/refs/projects/${id}`, { method: 'PATCH', token, body: payload })
 }
 
+export function deleteProject(token, id) {
+    return api(`/refs/projects/${id}`, { method: 'DELETE', token })
+}
+
 export function listStatuses(token, params = {}) {
     const search = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => {

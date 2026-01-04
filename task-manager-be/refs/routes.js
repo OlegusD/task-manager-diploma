@@ -94,6 +94,32 @@ router.post('/projects', requireRole('admin'), async (req, res) => {
     }
 })
 
+router.delete('/projects/:id', requireRole('admin'), async (req, res) => {
+    const { id } = req.params
+    try {
+        await query('BEGIN')
+        const { rows: found } = await query(
+            `SELECT id FROM projects WHERE id::text = $1 OR name = $1 LIMIT 1`,
+            [id]
+        )
+        if (!found.length) {
+            await query('ROLLBACK')
+            return res.status(404).json({ error: 'Not found' })
+        }
+        const projectId = found[0].id
+        await query(`DELETE FROM tasks WHERE project_id = $1`, [projectId])
+        await query(`DELETE FROM statuses WHERE project_id = $1`, [projectId])
+        await query(`DELETE FROM project_members WHERE project_id = $1`, [projectId])
+        await query(`DELETE FROM projects WHERE id = $1`, [projectId])
+        await query('COMMIT')
+        res.status(204).end()
+    } catch (e) {
+        await query('ROLLBACK')
+        console.error(e)
+        res.status(500).json({ error: 'Failed to delete project' })
+    }
+})
+
 router.get('/users', async (_req, res) => {
     const { rows } = await query(
         `SELECT u.id, u.name, u.email, r.name AS role
