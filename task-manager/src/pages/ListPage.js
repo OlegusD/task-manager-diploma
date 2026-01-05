@@ -204,18 +204,18 @@ export default function ListPage() {
                             <TableCell>{priorityMap[t.priority_id] || '—'}</TableCell>
                             <TableCell>{typeMap[t.type_id] || '—'}</TableCell>
                             <TableCell>
-                                <TextField
-                                    select
-                                    size="small"
-                                    value={t.assignee_id || ''}
-                                    onChange={(e) => updateInline(t.id, { assignee_id: e.target.value || null })}
-                                    sx={{ minWidth: 160 }}
-                                    disabled={!isAdmin && t.assignee_id !== user?.id}
-                                >
-                                    <MenuItem value="">Нет исполнителя</MenuItem>
-                                    {members.map((u) => (
-                                        <MenuItem key={u.id} value={u.id}>
-                                            {u.name}
+                            <TextField
+                                select
+                                size="small"
+                                value={t.assignee_id || ''}
+                                onChange={(e) => updateInline(t.id, { assignee_id: e.target.value || null })}
+                                sx={{ minWidth: 160 }}
+                                disabled={!isAdmin}
+                            >
+                                <MenuItem value="">Нет исполнителя</MenuItem>
+                                {members.map((u) => (
+                                    <MenuItem key={u.id} value={u.id}>
+                                        {u.name}
                                         </MenuItem>
                                     ))}
                                 </TextField>

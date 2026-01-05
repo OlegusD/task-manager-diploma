@@ -81,6 +81,11 @@ const timeUnits = [
     { key: 'months', label: 'месяцев', factor: 60 * 24 * 30 },
     { key: 'years', label: 'лет', factor: 60 * 24 * 365 },
 ]
+const addTimeUnits = [
+    { key: 'minutes', label: 'минут', factor: 1 },
+    { key: 'hours', label: 'часов', factor: 60 },
+]
+const estimateUnits = [{ key: 'hours', label: 'часов', factor: 60 }]
 
 function toMinutes(value, unitKey) {
     const unit = timeUnits.find((u) => u.key === unitKey) || timeUnits[0]
@@ -104,6 +109,11 @@ function formatSpent(minutes = 0) {
     const { value, unit } = fromMinutes(minutes)
     const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'минут'
     return `${value} ${unitLabel}`
+}
+
+function formatHours(minutes = 0) {
+    const hrs = (Number(minutes) || 0) / 60
+    return `${hrs.toFixed(1)} часов`
 }
 
 function spentColor(spent, estimated) {
@@ -147,8 +157,10 @@ export default function BoardPage() {
     const [modalEditCommentBody, setModalEditCommentBody] = useState('')
     const [modalSpentValue, setModalSpentValue] = useState(0)
     const [modalSpentUnit, setModalSpentUnit] = useState('minutes')
+    const [modalAddSpent, setModalAddSpent] = useState(0)
+    const [modalAddSpentUnit, setModalAddSpentUnit] = useState('minutes')
     const [modalEstimateValue, setModalEstimateValue] = useState(0)
-    const [modalEstimateUnit, setModalEstimateUnit] = useState('minutes')
+    const [modalEstimateUnit, setModalEstimateUnit] = useState('hours')
     const availableAssignees = useMemo(
         () => projectMembers.filter((u) => (u.role || '').toLowerCase() !== 'гость'),
         [projectMembers]
@@ -245,7 +257,7 @@ export default function BoardPage() {
                 spent_value: prev.spent_value ?? 0,
                 spent_unit: prev.spent_unit || 'minutes',
                 estimated_value: prev.estimated_value ?? 0,
-                estimated_unit: prev.estimated_unit || 'minutes',
+                estimated_unit: 'hours',
             }))
         } catch (e) {
             setError(e.message)
@@ -494,7 +506,7 @@ export default function BoardPage() {
             spent_value: 0,
             spent_unit: 'minutes',
             estimated_value: 0,
-            estimated_unit: 'minutes',
+            estimated_unit: 'hours',
         }))
     }
     async function handleSubmit(e) {
@@ -506,7 +518,6 @@ export default function BoardPage() {
         }
         try {
             const normalizeDate = (d) => toApiDate(d)
-            const spent = toMinutes(form.spent_value, form.spent_unit)
             const estimated = toMinutes(form.estimated_value, form.estimated_unit)
             const payload = {
                 ...form,
@@ -523,7 +534,7 @@ export default function BoardPage() {
                 priority_id: form.priority_id ? Number(form.priority_id) : null,
                 start_date: normalizeDate(form.start_date),
                 due_date: normalizeDate(form.due_date),
-                spent_minutes: spent,
+                spent_minutes: editingId ? undefined : 0,
                 estimated_minutes: estimated,
             }
             if (editingId) {
@@ -696,8 +707,10 @@ export default function BoardPage() {
             const parsedEstimated = fromMinutes(data.task.estimated_minutes || 0)
             setModalSpentValue(parsedSpent.value)
             setModalSpentUnit(parsedSpent.unit)
+            setModalAddSpent(0)
+            setModalAddSpentUnit('minutes')
             setModalEstimateValue(parsedEstimated.value)
-            setModalEstimateUnit(parsedEstimated.unit)
+            setModalEstimateUnit('hours')
             setModalComment('')
             setModalCommentsPage(1)
             setModalHistoryPage(1)
@@ -756,13 +769,31 @@ export default function BoardPage() {
     }
 
     async function saveModal(updated) {
-        if (isGuest) return
-        if (!modalTask) return
+        if (isGuest || !modalTask) return
         try {
             await updateTask(token, modalTask.task.id, updated)
             setModalOpen(false)
             setModalTask(null)
             loadTasks()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
+    async function addModalSpentTime() {
+        if (!modalTask || !canEditModal) return
+        const add = toMinutes(modalAddSpent, modalAddSpentUnit)
+        if (!add) return
+        try {
+            await updateTask(token, modalTask.task.id, {
+                spent_minutes: (modalTask.task.spent_minutes || 0) + add,
+            })
+            const data = await getTask(token, modalTask.task.id)
+            setModalTask(data)
+            const parsedSpent = fromMinutes(data.task.spent_minutes || 0)
+            setModalSpentValue(parsedSpent.value)
+            setModalSpentUnit(parsedSpent.unit)
+            setModalAddSpent(0)
         } catch (e) {
             setError(e.message)
         }
@@ -1426,35 +1457,42 @@ export default function BoardPage() {
                                             Родительская задача
                                         </Button>
                                     ) : null}
+                                    <Typography variant="body2" sx={{ minWidth: 200, alignSelf: 'center' }}>
+                                        Затраченное время: {formatHours(modalTask.task.spent_minutes)}
+                                    </Typography>
                                     <TextField
-                                        label="Затраченное время"
+                                        label="Добавить время"
                                         type="number"
-                                        value={modalSpentValue}
-                                        onChange={(e) => setModalSpentValue(e.target.value)}
+                                        value={modalAddSpent}
+                                        onChange={(e) => setModalAddSpent(e.target.value)}
                                         size="small"
                                         sx={{ minWidth: 160 }}
                                         InputProps={{ inputProps: { min: 0, step: 1 } }}
-                                        disabled={
-                                            !isAdmin &&
-                                            (!modalTask.task.assignee_id ||
-                                                modalTask.task.assignee_id !== user?.id)
-                                        }
+                                        disabled={!canEditModal}
                                     />
                                     <TextField
                                         select
-                                        label="Единицы"
+                                        label="Единицы добавления"
                                         size="small"
-                                        value={modalSpentUnit}
-                                        onChange={(e) => setModalSpentUnit(e.target.value)}
+                                        value={modalAddSpentUnit}
+                                        onChange={(e) => setModalAddSpentUnit(e.target.value)}
                                         sx={{ minWidth: 160 }}
                                         disabled={!canEditModal}
                                     >
-                                        {timeUnits.map((u) => (
+                                        {addTimeUnits.map((u) => (
                                             <MenuItem key={u.key} value={u.key}>
                                                 {u.label}
                                             </MenuItem>
                                         ))}
                                     </TextField>
+                                    <Button
+                                        variant="outlined"
+                                        size="small"
+                                        onClick={addModalSpentTime}
+                                        disabled={!canEditModal || !Number(modalAddSpent)}
+                                    >
+                                        Добавить время
+                                    </Button>
                                     <TextField
                                         label="Оценка времени"
                                         type="number"
@@ -1465,21 +1503,9 @@ export default function BoardPage() {
                                         InputProps={{ inputProps: { min: 0, step: 1 } }}
                                         disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
                                     />
-                                    <TextField
-                                        select
-                                        label="Единицы оценки"
-                                        size="small"
-                                        value={modalEstimateUnit}
-                                        onChange={(e) => setModalEstimateUnit(e.target.value)}
-                                        sx={{ minWidth: 160 }}
-                                        disabled={!(isAdmin || modalTask.task.author_id === user?.id)}
-                                    >
-                                        {timeUnits.map((u) => (
-                                            <MenuItem key={u.key} value={u.key}>
-                                                {u.label}
-                                            </MenuItem>
-                                        ))}
-                                    </TextField>
+                                    <Typography variant="body2" sx={{ minWidth: 120, alignSelf: 'center' }}>
+                                        Единицы оценки: часов
+                                    </Typography>
                                 </Stack>
                                 <Stack spacing={1}>
                                     <Typography variant="subtitle2">Дочерние задачи</Typography>
@@ -1643,7 +1669,9 @@ export default function BoardPage() {
                                 <Typography variant="subtitle2">История</Typography>
                                 <Stack spacing={1}>
                                     {modalTask.history
-                                        ?.slice(
+                                        ?.slice()
+                                        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                                        .slice(
                                             (modalHistoryPage - 1) * pageSize,
                                             modalHistoryPage * pageSize
                                         )
@@ -1653,18 +1681,72 @@ export default function BoardPage() {
                                                 sx={{ border: '1px dashed', p: 1, borderRadius: 1 }}
                                             >
                                                 <Typography variant="caption" color="text.secondary">
-                                                    {h.action} ·{' '}
-                                                    {new Date(h.created_at).toLocaleString()} ·{' '}
+                                                    {h.action} · {new Date(h.created_at).toLocaleString()} ·{' '}
                                                     {h.author_name || 'system'}
                                                 </Typography>
-                                                {h.new_value ? (
-                                                    <Typography
-                                                        variant="body2"
-                                                        sx={{ whiteSpace: 'pre-wrap' }}
-                                                    >
-                                                        {JSON.stringify(h.new_value, null, 2)}
-                                                    </Typography>
-                                                ) : null}
+                                                {(function renderHistory() {
+                                                    const labelMap = {
+                                                        title: 'Название',
+                                                        description: 'Описание',
+                                                        status_id: 'Статус',
+                                                        priority_id: 'Приоритет',
+                                                        parent_id: 'Родительская задача',
+                                                        assignee_id: 'Исполнитель',
+                                                        project_id: 'Проект',
+                                                        type_id: 'Тип',
+                                                        start_date: 'Начало',
+                                                        due_date: 'Дедлайн',
+                                                        spent_minutes: 'Затраченное время',
+                                                        estimated_minutes: 'Оценка времени',
+                                                    }
+                                                    const formatVal = (key, val) => {
+                                                        if (val === null || val === undefined || val === '') return '—'
+                                                        switch (key) {
+                                                            case 'status_id':
+                                                                return statusOptions.find((s) => s.id === val)?.name || val
+                                                            case 'priority_id':
+                                                                return priorities.find((p) => p.id === val)?.name || val
+                                                            case 'type_id':
+                                                                return types.find((t) => t.id === val)?.name || val
+                                                            case 'assignee_id':
+                                                                return users.find((u) => u.id === val)?.name || 'Не назначен'
+                                                            case 'start_date':
+                                                            case 'due_date':
+                                                                return new Date(val).toLocaleDateString()
+                                                            case 'spent_minutes':
+                                                            case 'estimated_minutes':
+                                                                return formatSpent(val)
+                                                            default:
+                                                                return String(val)
+                                                        }
+                                                    }
+                                                    const lines = []
+                                                    if (h.action === 'updated' && h.new_value) {
+                                                        Object.entries(h.new_value).forEach(([key, diff]) => {
+                                                            const label = labelMap[key] || key
+                                                            const from = formatVal(key, diff.from)
+                                                            const to = formatVal(key, diff.to)
+                                                            lines.push(`Изменено поле "${label}": ${from} → ${to}`)
+                                                        })
+                                                    } else if (h.action === 'created') {
+                                                        lines.push('Задача создана')
+                                                    } else if (h.action === 'deleted') {
+                                                        lines.push('Задача удалена')
+                                                    } else if (h.action === 'comment_added' && h.new_value?.body) {
+                                                        lines.push(`Добавлен комментарий: ${h.new_value.body}`)
+                                                    } else if (h.action === 'comment_updated' && h.new_value?.body) {
+                                                        lines.push(`Обновлен комментарий: ${h.new_value.body}`)
+                                                    } else if (h.action === 'comment_deleted') {
+                                                        lines.push('Комментарий удалён')
+                                                    } else if (h.action) {
+                                                        lines.push(h.action)
+                                                    }
+                                                    return lines.map((line, idx) => (
+                                                        <Typography key={idx} variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                                                            {line}
+                                                        </Typography>
+                                                    ))
+                                                })()}
                                             </Box>
                                         ))}
                                     {!modalTask.history?.length ? (
@@ -1689,31 +1771,23 @@ export default function BoardPage() {
                         </DialogContent>
                         <DialogActions>
                             <Button onClick={() => setModalOpen(false)}>Закрыть</Button>
-                    <Button
-                        variant="contained"
-                        disabled={!canEditModal}
-                        onClick={() =>
-                            saveModal({
-                                title: modalTask.task.title,
-                                description: modalTask.task.description,
-                                status_id: modalTask.task.status_id,
-                                priority_id: modalTask.task.priority_id,
-                                type_id: modalTask.task.type_id,
-                                assignee_id: modalTask.task.assignee_id,
-                                start_date: toApiDate(
-                                    shiftToInputDate(modalTask.task.start_date)
-                                ),
-                                due_date: toApiDate(
-                                    shiftToInputDate(modalTask.task.due_date)
-                                ),
-                                spent_minutes: toMinutes(modalSpentValue, modalSpentUnit),
-                                estimated_minutes: toMinutes(
-                                    modalEstimateValue,
-                                    modalEstimateUnit
-                                ),
-                            })
-                        }
-                    >
+                            <Button
+                                variant="contained"
+                                disabled={!canEditModal}
+                                onClick={() =>
+                                    saveModal({
+                                        title: modalTask.task.title,
+                                        description: modalTask.task.description,
+                                        status_id: modalTask.task.status_id,
+                                        priority_id: modalTask.task.priority_id,
+                                        type_id: modalTask.task.type_id,
+                                        assignee_id: modalTask.task.assignee_id,
+                                        start_date: toApiDate(shiftToInputDate(modalTask.task.start_date)),
+                                        due_date: toApiDate(shiftToInputDate(modalTask.task.due_date)),
+                                        estimated_minutes: toMinutes(modalEstimateValue, modalEstimateUnit),
+                                    })
+                                }
+                            >
                                 Сохранить
                             </Button>
                         </DialogActions>
@@ -1872,40 +1946,10 @@ export default function BoardPage() {
                                 InputLabelProps={{ shrink: true }}
                             />
                         </Stack>
-                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-                            <TextField
-                                label="Затраченное время"
-                                type="number"
-                                value={form.spent_value}
-                                onChange={(e) =>
-                                    setForm((prev) => ({
-                                        ...prev,
-                                        spent_value: e.target.value,
-                                    }))
-                                }
-                                size="small"
-                                sx={{ minWidth: 160 }}
-                                InputProps={{ inputProps: { min: 0, step: 1 } }}
-                            />
-                            <TextField
-                                select
-                                label="Единицы"
-                                size="small"
-                                value={form.spent_unit}
-                                onChange={(e) =>
-                                    setForm((prev) => ({
-                                        ...prev,
-                                        spent_unit: e.target.value,
-                                    }))
-                                }
-                                sx={{ minWidth: 160 }}
-                            >
-                                {timeUnits.map((u) => (
-                                    <MenuItem key={u.key} value={u.key}>
-                                        {u.label}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
+                            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+                            <Typography variant="body2" sx={{ minWidth: 200, alignSelf: 'center' }}>
+                                Затраченное время: {formatHours(form.spent_value * 60)}
+                            </Typography>
                             <TextField
                                 label="Оценка времени"
                                 type="number"
@@ -1921,26 +1965,9 @@ export default function BoardPage() {
                                 InputProps={{ inputProps: { min: 0, step: 1 } }}
                                 disabled={editingId ? !(isAdmin || user?.id === form.author_id) : false}
                             />
-                            <TextField
-                                select
-                                label="Единицы оценки"
-                                size="small"
-                                value={form.estimated_unit}
-                                onChange={(e) =>
-                                    setForm((prev) => ({
-                                        ...prev,
-                                        estimated_unit: e.target.value,
-                                    }))
-                                }
-                                sx={{ minWidth: 160 }}
-                                disabled={editingId ? !(isAdmin || user?.id === form.author_id) : false}
-                            >
-                                {timeUnits.map((u) => (
-                                    <MenuItem key={u.key} value={u.key}>
-                                        {u.label}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
+                            <Typography variant="body2" sx={{ minWidth: 120, alignSelf: 'center' }}>
+                                Единицы оценки: часов
+                            </Typography>
                         </Stack>
                     </Stack>
                 </DialogContent>

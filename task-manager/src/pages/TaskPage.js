@@ -37,6 +37,11 @@ const timeUnits = [
     { key: 'months', label: 'месяцев', factor: 60 * 24 * 30 },
     { key: 'years', label: 'лет', factor: 60 * 24 * 365 },
 ]
+const estimateUnits = [{ key: 'hours', label: 'часов', factor: 60 }]
+const addTimeUnits = [
+    { key: 'minutes', label: 'минут', factor: 1 },
+    { key: 'hours', label: 'часов', factor: 60 },
+]
 
 function toMinutes(value, unitKey) {
     const unit = timeUnits.find((u) => u.key === unitKey) || timeUnits[0]
@@ -60,6 +65,11 @@ function formatSpent(minutes = 0) {
     const { value, unit } = fromMinutes(minutes)
     const unitLabel = timeUnits.find((u) => u.key === unit)?.label || 'минут'
     return `${value} ${unitLabel}`
+}
+
+function formatHours(minutes = 0) {
+    const hrs = (Number(minutes) || 0) / 60
+    return `${hrs.toFixed(1)} часов`
 }
 
 function spentColor(spent, estimated) {
@@ -104,8 +114,10 @@ export default function TaskPage() {
         spent_value: 0,
         spent_unit: 'minutes',
         estimated_value: 0,
-        estimated_unit: 'minutes',
+        estimated_unit: 'hours',
     })
+    const [addSpentValue, setAddSpentValue] = useState(0)
+    const [addSpentUnit, setAddSpentUnit] = useState('minutes')
     const [error, setError] = useState('')
 
     useEffect(() => {
@@ -153,6 +165,9 @@ export default function TaskPage() {
     }, [statuses, task])
 
     const statusMap = useMemo(() => new Map(uniqueStatuses.map((s) => [s.id, s.name])), [uniqueStatuses])
+    const priorityMap = useMemo(() => new Map(priorities.map((p) => [p.id, p.name])), [priorities])
+    const typeMap = useMemo(() => new Map(types.map((t) => [t.id, t.name])), [types])
+    const userMap = useMemo(() => new Map(users.map((u) => [u.id, u.name])), [users])
     const availableAssignees = useMemo(
         () => projectMembers.filter((m) => (m.role || '').toLowerCase() !== 'гость'),
         [projectMembers]
@@ -179,8 +194,10 @@ export default function TaskPage() {
                 spent_value: parsedSpent.value,
                 spent_unit: parsedSpent.unit,
                 estimated_value: parsedEstimated.value,
-                estimated_unit: parsedEstimated.unit,
+                estimated_unit: 'hours',
             })
+            setAddSpentValue(0)
+            setAddSpentUnit('minutes')
             await loadRefs(data.task.project_id)
         } catch (e) {
             setError(e.message)
@@ -199,7 +216,6 @@ export default function TaskPage() {
                 priority_id: form.priority_id,
                 type_id: form.type_id || null,
                 assignee_id: form.assignee_id || null,
-                spent_minutes: toMinutes(form.spent_value, form.spent_unit),
                 estimated_minutes: toMinutes(form.estimated_value, form.estimated_unit),
             })
             await loadTask()
@@ -255,15 +271,99 @@ export default function TaskPage() {
         }
     }
 
+    async function addSpentTime() {
+        if (isGuest || !canEdit) return
+        const add = toMinutes(addSpentValue, addSpentUnit)
+        if (!add) return
+        try {
+            await updateTask(token, taskId, {
+                spent_minutes: (task.spent_minutes || 0) + add,
+            })
+            setAddSpentValue(0)
+            await loadTask()
+        } catch (e) {
+            setError(e.message)
+        }
+    }
+
     const paginatedComments = useMemo(() => {
         const start = (commentPage - 1) * pageSize
         return comments.slice(start, start + pageSize)
     }, [comments, commentPage])
 
+    const orderedHistory = useMemo(
+        () => [...history].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
+        [history]
+    )
     const paginatedHistory = useMemo(() => {
         const start = (historyPage - 1) * pageSize
-        return history.slice(start, start + pageSize)
-    }, [history, historyPage])
+        return orderedHistory.slice(start, start + pageSize)
+    }, [orderedHistory, historyPage])
+
+    function formatHistoryEntry(h) {
+        const lines = []
+        const labelMap = {
+            title: 'Название',
+            description: 'Описание',
+            status_id: 'Статус',
+            priority_id: 'Приоритет',
+            parent_id: 'Родительская задача',
+            assignee_id: 'Исполнитель',
+            project_id: 'Проект',
+            type_id: 'Тип',
+            start_date: 'Начало',
+            due_date: 'Дедлайн',
+            spent_minutes: 'Затраченное время',
+            estimated_minutes: 'Оценка времени',
+        }
+        const formatVal = (key, val) => {
+            if (val === null || val === undefined || val === '') return '—'
+            switch (key) {
+                case 'status_id':
+                    return statusMap.get(val) || val
+                case 'priority_id':
+                    return priorityMap.get(val) || val
+                case 'type_id':
+                    return typeMap.get(val) || val
+                case 'assignee_id':
+                    return userMap.get(val) || 'Не назначен'
+                case 'parent_id': {
+                    const child = children.find((c) => c.id === val)
+                    return child?.title || val
+                }
+                case 'start_date':
+                case 'due_date':
+                    return new Date(val).toLocaleDateString()
+                case 'spent_minutes':
+                case 'estimated_minutes':
+                    return formatSpent(val)
+                default:
+                    return String(val)
+            }
+        }
+
+        if (h.action === 'updated' && h.new_value) {
+            Object.entries(h.new_value).forEach(([key, diff]) => {
+                const label = labelMap[key] || key
+                const from = formatVal(key, diff.from)
+                const to = formatVal(key, diff.to)
+                lines.push(`Изменено поле "${label}": ${from} → ${to}`)
+            })
+        } else if (h.action === 'created') {
+            lines.push('Задача создана')
+        } else if (h.action === 'deleted') {
+            lines.push('Задача удалена')
+        } else if (h.action === 'comment_added' && h.new_value?.body) {
+            lines.push(`Добавлен комментарий: ${h.new_value.body}`)
+        } else if (h.action === 'comment_updated' && h.new_value?.body) {
+            lines.push(`Обновлен комментарий: ${h.new_value.body}`)
+        } else if (h.action === 'comment_deleted') {
+            lines.push('Комментарий удалён')
+        } else if (h.action) {
+            lines.push(h.action)
+        }
+        return lines
+    }
 
     const statusLabel = task ? statusMap.get(task.status_id) || '-' : '-'
 
@@ -374,7 +474,7 @@ export default function TaskPage() {
                                     value={form.assignee_id}
                                     onChange={(e) => setForm((prev) => ({ ...prev, assignee_id: e.target.value }))}
                                     fullWidth
-                                    disabled={!canEdit || isGuest}
+                                    disabled={!isAdmin}
                                 >
                                     <MenuItem value="">Не назначен</MenuItem>
                                     {availableAssignees.map((u) => (
@@ -386,30 +486,40 @@ export default function TaskPage() {
                             </Stack>
 
                             <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
+                                <Typography variant="body2" sx={{ minWidth: 200, alignSelf: 'center' }}>
+                                    Затраченное время: {formatHours(task?.spent_minutes)}
+                                </Typography>
                                 <TextField
-                                    label="Затраченное время"
+                                    label="Добавить время"
                                     type="number"
-                                    value={form.spent_value}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({ ...prev, spent_value: Number(e.target.value) }))
-                                    }
+                                    value={addSpentValue}
+                                    onChange={(e) => setAddSpentValue(Number(e.target.value))}
                                     fullWidth
                                     disabled={!canEdit || isGuest}
                                 />
                                 <TextField
                                     select
-                                    label="Единицы"
-                                    value={form.spent_unit}
-                                    onChange={(e) => setForm((prev) => ({ ...prev, spent_unit: e.target.value }))}
+                                    label="Единицы добавления"
+                                    value={addSpentUnit}
+                                    onChange={(e) => setAddSpentUnit(e.target.value)}
                                     fullWidth
                                     disabled={!canEdit || isGuest}
                                 >
-                                    {timeUnits.map((u) => (
+                                    {addTimeUnits.map((u) => (
                                         <MenuItem key={u.key} value={u.key}>
                                             {u.label}
                                         </MenuItem>
                                     ))}
                                 </TextField>
+                                <Button
+                                    variant="outlined"
+                                    onClick={addSpentTime}
+                                    disabled={!canEdit || isGuest || !Number(addSpentValue)}
+                                >
+                                    Добавить время
+                                </Button>
+                            </Stack>
+                            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
                                 <TextField
                                     label="Оценка времени"
                                     type="number"
@@ -427,13 +537,10 @@ export default function TaskPage() {
                                     select
                                     label="Единицы оценки"
                                     value={form.estimated_unit}
-                                    onChange={(e) =>
-                                        setForm((prev) => ({ ...prev, estimated_unit: e.target.value }))
-                                    }
                                     fullWidth
-                                    disabled={!isAdmin || isGuest}
+                                    disabled
                                 >
-                                    {timeUnits.map((u) => (
+                                    {estimateUnits.map((u) => (
                                         <MenuItem key={u.key} value={u.key}>
                                             {u.label}
                                         </MenuItem>
@@ -599,11 +706,15 @@ export default function TaskPage() {
                                         {h.action} · {new Date(h.created_at).toLocaleString()} ·{' '}
                                         {h.author_name || 'system'}
                                     </Typography>
-                                    {h.new_value ? (
-                                        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                                            {JSON.stringify(h.new_value, null, 2)}
+                                    {formatHistoryEntry(h).map((line, idx) => (
+                                        <Typography
+                                            key={idx}
+                                            variant="body2"
+                                            sx={{ whiteSpace: 'pre-wrap' }}
+                                        >
+                                            {line}
                                         </Typography>
-                                    ) : null}
+                                    ))}
                                 </Paper>
                             ))}
                             {!history.length ? (
